@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "358935174408",
+    "project_id": "sagada-tour-planner-and-map",
+    "storage_bucket": "sagada-tour-planner-and-map.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:358935174408:android:2534ecf965e7be2ef2a0bd",
+        "android_client_info": {
+          "package_name": "com.example.sagadatourplannerandmap"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "358935174408-dfsvtvl57ijopenc5vuoun4j2g4bomt2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.sagadatourplannerandmap",
+            "certificate_hash": "1330335cc6e6d23a46cb000363e3db5f1422651f"
+          }
+        },
+        {
+          "client_id": "358935174408-5bna7j8jj4ar9dgqjbthcnic1hlo79a3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "358935174408-5bna7j8jj4ar9dgqjbthcnic1hlo79a3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "358935174408-7efkc2bd59adshppas1bior4b43rortu.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.sagadaTourPlanner"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
