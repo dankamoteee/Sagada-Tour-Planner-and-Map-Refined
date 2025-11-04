@@ -89,4 +89,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'sagada-tour-planner-and-map.firebasestorage.app',
     measurementId: 'G-ZT80RVMQ01',
   );
+
 }

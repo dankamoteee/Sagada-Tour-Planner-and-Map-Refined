@@ -65,20 +65,27 @@ class _VerifyOTPScreenState extends State<VerifyOTPScreen> {
   }
 
   Future<void> _resendOTP() async {
-    _startTimer();
     setState(() => _isLoading = true); // Show loading on resend
-    await _auth.setSettings(appVerificationDisabledForTesting: true);
+    //await _auth.setSettings(appVerificationDisabledForTesting: true);
     await _auth.verifyPhoneNumber(
       phoneNumber: widget.phoneNumber,
       forceResendingToken: _resendToken, // Use the token
       verificationCompleted: (PhoneAuthCredential credential) async {
-        // ... same as before
+        // Auto-retrieved on resend! Link the credential.
+        await _verifyOTP(credential: credential);
       },
       verificationFailed: (FirebaseAuthException e) {
-        // ... same as before
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to resend code: ${e.message}'),
+            backgroundColor: Colors.red,
+          ),
+        );
         setState(() => _isLoading = false);
       },
       codeSent: (String verificationId, int? resendToken) {
+        _startTimer();
         // Code was resent. Update our local IDs.
         if (!mounted) return;
         setState(() {
@@ -109,8 +116,7 @@ class _VerifyOTPScreenState extends State<VerifyOTPScreen> {
 
     try {
       // Create credential if not already provided
-      final authCredential =
-          credential ??
+      final authCredential = credential ??
           PhoneAuthProvider.credential(
             verificationId: _verificationId, // This is now guaranteed to work
             smsCode: _otpController.text.trim(),
@@ -121,8 +127,8 @@ class _VerifyOTPScreenState extends State<VerifyOTPScreen> {
       if (user == null) {
         // Wait up to 5 seconds for the auth state to restore
         await for (var authUser in _auth.authStateChanges().timeout(
-          const Duration(seconds: 5),
-        )) {
+              const Duration(seconds: 5),
+            )) {
           if (authUser != null) {
             user = authUser;
             break; // We found the user, stop listening
@@ -266,35 +272,34 @@ class _VerifyOTPScreenState extends State<VerifyOTPScreen> {
                         ),
                       ),
                       onPressed: _isLoading ? null : _verifyOTP,
-                      child:
-                          _isLoading
-                              ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 3,
-                                ),
-                              )
-                              : const Text('Verify & Continue'),
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 3,
+                              ),
+                            )
+                          : const Text('Verify & Continue'),
                     ),
                     const SizedBox(height: 24),
                     _countdown > 0
                         ? Text(
-                          'Resend code in $_countdown seconds',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.grey),
-                        )
+                            'Resend code in $_countdown seconds',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.grey),
+                          )
                         : TextButton(
-                          onPressed: _resendOTP,
-                          child: const Text(
-                            'Resend OTP Code',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue,
+                            onPressed: _resendOTP,
+                            child: const Text(
+                              'Resend OTP Code',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue,
+                              ),
                             ),
                           ),
-                        ),
                   ],
                 ),
               ),

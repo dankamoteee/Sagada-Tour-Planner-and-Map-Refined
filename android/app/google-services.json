@@ -14,14 +14,6 @@
       },
       "oauth_client": [
         {
-          "client_id": "358935174408-dfsvtvl57ijopenc5vuoun4j2g4bomt2.apps.googleusercontent.com",
-          "client_type": 1,
-          "android_info": {
-            "package_name": "com.example.sagadatourplannerandmap",
-            "certificate_hash": "1330335cc6e6d23a46cb000363e3db5f1422651f"
-          }
-        },
-        {
           "client_id": "358935174408-5bna7j8jj4ar9dgqjbthcnic1hlo79a3.apps.googleusercontent.com",
           "client_type": 3
         }

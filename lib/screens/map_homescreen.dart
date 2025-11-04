@@ -45,6 +45,7 @@ LatLng? _lastDestination; // remember last POI clicked
 class _MapScreenState extends State<MapScreen> {
   Map<String, String>? _itinerarySummary; // 👈 ADD THIS
   Map<String, dynamic>? _currentTransportRouteData;
+  bool _locationPermissionGranted = false;
   bool _isAnimatingCamera = false;
   bool _tourismReminderShown = false; // 👈 ADD THIS LINE
   bool _isCustomRoutePreview = false;
@@ -125,17 +126,15 @@ class _MapScreenState extends State<MapScreen> {
       textPainter.width + padding * 2,
       textPainter.height + padding,
     );
-    final Paint backgroundPaint =
-        Paint()..color = Theme.of(context).primaryColor; // Themed background
-    final Paint borderPaint =
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3;
-    final Paint shadowPaint =
-        Paint()
-          ..color = Colors.black.withOpacity(0.4)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, shadowBlur);
+    final Paint backgroundPaint = Paint()
+      ..color = Theme.of(context).primaryColor; // Themed background
+    final Paint borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    final Paint shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.4)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, shadowBlur);
 
     // 3. Set up the canvas
     final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
@@ -171,9 +170,9 @@ class _MapScreenState extends State<MapScreen> {
 
     // 8. Convert to BitmapDescriptor
     final ui.Image image = await pictureRecorder.endRecording().toImage(
-      (size.width + shadowBlur).toInt(),
-      (size.height + shadowBlur).toInt(),
-    );
+          (size.width + shadowBlur).toInt(),
+          (size.height + shadowBlur).toInt(),
+        );
     final ByteData? byteData = await image.toByteData(
       format: ui.ImageByteFormat.png,
     );
@@ -187,11 +186,10 @@ class _MapScreenState extends State<MapScreen> {
     final Canvas canvas = Canvas(pictureRecorder);
 
     final Paint backgroundPaint = Paint()..color = Colors.orange.shade700;
-    final Paint borderPaint =
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 6;
+    final Paint borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6;
 
     // Draw the main colored circle
     canvas.drawCircle(
@@ -231,9 +229,9 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     final img = await pictureRecorder.endRecording().toImage(
-      size.toInt(),
-      size.toInt(),
-    );
+          size.toInt(),
+          size.toInt(),
+        );
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
 
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
@@ -263,8 +261,7 @@ class _MapScreenState extends State<MapScreen> {
           "optimize:true|${coordinates.sublist(1, coordinates.length - 1).map((geo) => "${geo.latitude},${geo.longitude}").join('|')}";
     }
 
-    final String url =
-        "https://maps.googleapis.com/maps/api/directions/json"
+    final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"
         "&waypoints=$waypoints&key=$apiKey";
@@ -286,10 +283,12 @@ class _MapScreenState extends State<MapScreen> {
         // 1. Add the main solid route line
         final String encodedOverviewPolyline =
             route["overview_polyline"]["points"];
+        final List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
+          encodedOverviewPolyline, // (or 'encodedPolyline')
+        );
+
         final List<LatLng> mainRoutePoints =
-            PolylinePoints.decodePolyline(
-              encodedOverviewPolyline,
-            ).map((p) => LatLng(p.latitude, p.longitude)).toList();
+            decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
         allPolylines.add(
           Polyline(
@@ -415,25 +414,21 @@ class _MapScreenState extends State<MapScreen> {
                   radius: 20,
                   backgroundColor: themeColor,
                   // --- REPLACE THIS LINE ---
-                  backgroundImage:
-                      (photoUrl != null && photoUrl.isNotEmpty)
-                          ? CachedNetworkImageProvider(
-                            photoUrl,
-                          ) // Use the caching provider
-                          : null,
+                  backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                      ? CachedNetworkImageProvider(
+                          photoUrl,
+                        ) // Use the caching provider
+                      : null,
                   // --- END OF REPLACEMENT ---
-                  child:
-                      (photoUrl == null || photoUrl.isEmpty)
-                          ? Text(
-                            fullName.isNotEmpty
-                                ? fullName[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          )
-                          : null,
+                  child: (photoUrl == null || photoUrl.isEmpty)
+                      ? Text(
+                          fullName.isNotEmpty ? fullName[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : null,
                 ),
                 const SizedBox(width: 12),
                 Text(
@@ -503,9 +498,9 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     final img = await pictureRecorder.endRecording().toImage(
-      size.toInt(),
-      size.toInt(),
-    );
+          size.toInt(),
+          size.toInt(),
+        );
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
 
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
@@ -520,119 +515,121 @@ class _MapScreenState extends State<MapScreen> {
     // Save destination for re-use if needed later
     _lastDestination = destination;
 
-    PolylinePoints polylinePoints = PolylinePoints(
-      apiKey: "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI", // Use your API key
-    );
+    // 1. GET THE ROUTE DATA USING YOUR EXISTING HTTP METHOD
+    final String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"; // Your key
+    final String url = "https://maps.googleapis.com/maps/api/directions/json"
+        "?origin=${origin.latitude},${origin.longitude}"
+        "&destination=${destination.latitude},${destination.longitude}"
+        "&mode=$mode&key=$apiKey";
 
-    PolylineResult result = await polylinePoints.getRouteBetweenCoordinates(
-      request: PolylineRequest(
-        origin: PointLatLng(origin.latitude, origin.longitude),
-        destination: PointLatLng(destination.latitude, destination.longitude),
-        mode:
-            mode == "walking"
-                ? TravelMode.walking
-                : mode == "bicycling"
-                ? TravelMode.bicycling
-                : TravelMode.driving,
-      ),
-    );
+    final response = await http.get(Uri.parse(url));
 
-    if (result.points.isNotEmpty) {
-      _polylineCoordinates =
-          result.points.map((p) => LatLng(p.latitude, p.longitude)).toList();
-
-      // --- START OF CHANGES ---
-
-      // Create a new Set to hold all our polylines (the main route + the off-road part)
-      final Set<Polyline> polylines = {};
-
-      // 1. Create the main, solid on-road route polyline
-      polylines.add(
-        Polyline(
-          polylineId: const PolylineId("on_road_route"),
-          color: Colors.blue.shade400,
-          width: 5,
-          points: _polylineCoordinates,
-          patterns:
-              mode == 'walking'
-                  ? [PatternItem.dash(15), PatternItem.gap(10)]
-                  : [],
-        ),
+    if (response.statusCode != 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to get directions: ${response.body}")),
       );
+      return;
+    }
 
-      // 2. Check if the destination is off-road and create the dotted line
-      final LatLng lastPointOnRoad = _polylineCoordinates.last;
-      final double offRoadDistance = Geolocator.distanceBetween(
-        lastPointOnRoad.latitude,
-        lastPointOnRoad.longitude,
-        destination.latitude,
-        destination.longitude,
-      );
+    final data = json.decode(response.body);
 
-      // Only draw the dotted line if the destination is more than 10 meters from the road
-      if (offRoadDistance > 10) {
-        polylines.add(
-          Polyline(
-            polylineId: const PolylineId("off_road_segment"),
-            color: Colors.blue.shade400, // Same color for consistency
-            width: 5,
-            points: [
-              lastPointOnRoad,
-              destination,
-            ], // A simple line from the road to the destination
-            patterns: [
-              PatternItem.dot,
-              PatternItem.gap(10),
-            ], // This creates the dotted effect
-          ),
-        );
-      }
-
-      // 3. Create the custom circle icons for start and end
-      final BitmapDescriptor startIcon = await _createCircleMarkerBitmap(
-        Colors.green.shade600,
-      );
-      final BitmapDescriptor endIcon = await _createCircleMarkerBitmap(
-        Colors.blue.shade600,
-      );
-
-      setState(() {
-        _polylines =
-            polylines; // Update the state with our new set of polylines
-
-        _markers.add(
-          Marker(
-            markerId: const MarkerId('start_pin'),
-            position: origin,
-            icon: startIcon,
-            anchor: const Offset(0.5, 0.5),
-            zIndex: 1,
-          ),
-        );
-        _markers.add(
-          Marker(
-            markerId: const MarkerId('end_pin'),
-            position: destination, // The end marker is at the TRUE destination
-            icon: endIcon,
-            anchor: const Offset(0.5, 0.5),
-            zIndex: 1,
-          ),
-        );
-      });
-
-      // --- END OF CHANGES ---
-
-      LatLngBounds bounds = _boundsFromLatLngList([
-        origin,
-        destination,
-        ..._polylineCoordinates,
-      ]);
-      _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
-    } else {
+    if (data["routes"].isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("No route available for $mode mode here.")),
       );
+      return;
     }
+
+    // 2. DECODE THE POLYLINE (The new, correct way)
+    final String encodedPolyline =
+        data["routes"][0]["overview_polyline"]["points"];
+
+    final List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
+      encodedPolyline,
+    );
+
+    _polylineCoordinates =
+        decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
+
+    if (_polylineCoordinates.isEmpty) return;
+
+    // --- All your existing logic below this line is PERFECT ---
+    // --- No changes needed for the rest of the function ---
+
+    // 3. Create a new Set to hold all our polylines...
+    final Set<Polyline> polylines = {};
+
+    // 4. Create the main, solid on-road route polyline
+    polylines.add(
+      Polyline(
+        polylineId: const PolylineId("on_road_route"),
+        color: Colors.blue.shade400,
+        width: 5,
+        points: _polylineCoordinates,
+        patterns: mode == 'walking'
+            ? [PatternItem.dash(15), PatternItem.gap(10)]
+            : [],
+      ),
+    );
+
+    // 5. Check if the destination is off-road...
+    final LatLng lastPointOnRoad = _polylineCoordinates.last;
+    final double offRoadDistance = Geolocator.distanceBetween(
+      lastPointOnRoad.latitude,
+      lastPointOnRoad.longitude,
+      destination.latitude,
+      destination.longitude,
+    );
+
+    if (offRoadDistance > 10) {
+      polylines.add(
+        Polyline(
+          polylineId: const PolylineId("off_road_segment"),
+          color: Colors.blue.shade400,
+          width: 5,
+          points: [lastPointOnRoad, destination],
+          patterns: [PatternItem.dot, PatternItem.gap(10)],
+        ),
+      );
+    }
+
+    // 6. Create the custom circle icons for start and end
+    final BitmapDescriptor startIcon = await _createCircleMarkerBitmap(
+      Colors.green.shade600,
+    );
+    final BitmapDescriptor endIcon = await _createCircleMarkerBitmap(
+      Colors.blue.shade600,
+    );
+
+    setState(() {
+      _polylines = polylines; // Update the state
+
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('start_pin'),
+          position: origin,
+          icon: startIcon,
+          anchor: const Offset(0.5, 0.5),
+          zIndex: 1,
+        ),
+      );
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('end_pin'),
+          position: destination,
+          icon: endIcon,
+          anchor: const Offset(0.5, 0.5),
+          zIndex: 1,
+        ),
+      );
+    });
+
+    LatLngBounds bounds = _boundsFromLatLngList([
+      origin,
+      destination,
+      ..._polylineCoordinates,
+    ]);
+    _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
   }
 
   // Your old _drawRouteToPoi function now becomes much simpler
@@ -692,8 +689,7 @@ class _MapScreenState extends State<MapScreen> {
   ) async {
     final String apiKey =
         "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"; // 👈 use your key
-    final String url =
-        "https://maps.googleapis.com/maps/api/directions/json"
+    final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"
         "&mode=$mode&key=$apiKey";
@@ -756,10 +752,9 @@ class _MapScreenState extends State<MapScreen> {
     Map<String, dynamic>? poiData,
   }) async {
     final bool isGuideRequired = poiData?['guideRequired'] as bool? ?? false;
-    final guideSubtitle =
-        isGuideRequired
-            ? 'This destination requires an accredited guide.'
-            : 'For certain sites, a guide may be required. Please verify at the Tourism Office.';
+    final guideSubtitle = isGuideRequired
+        ? 'This destination requires an accredited guide.'
+        : 'For certain sites, a guide may be required. Please verify at the Tourism Office.';
 
     return showDialog<bool>(
       context: context,
@@ -977,39 +972,38 @@ class _MapScreenState extends State<MapScreen> {
     final route = _currentTransportRouteData!;
     showDialog(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: Text(route['routeName'] ?? 'Route Details'),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ), // Optional: Nicer corners
-            // --- START OF FIX ---
-            // Replace ListBody with a Column
-            content: Column(
-              mainAxisSize:
-                  MainAxisSize.min, // This is important for Columns in dialogs
-              children: <Widget>[
-                ListTile(
-                  leading: const Icon(Icons.money),
-                  title: const Text('Fare'),
-                  subtitle: Text(route['fareDetails'] ?? 'Not available'),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.schedule),
-                  title: const Text('Schedule'),
-                  subtitle: Text(route['schedule'] ?? 'Not available'),
-                ),
-              ],
+      builder: (context) => AlertDialog(
+        title: Text(route['routeName'] ?? 'Route Details'),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ), // Optional: Nicer corners
+        // --- START OF FIX ---
+        // Replace ListBody with a Column
+        content: Column(
+          mainAxisSize:
+              MainAxisSize.min, // This is important for Columns in dialogs
+          children: <Widget>[
+            ListTile(
+              leading: const Icon(Icons.money),
+              title: const Text('Fare'),
+              subtitle: Text(route['fareDetails'] ?? 'Not available'),
             ),
+            ListTile(
+              leading: const Icon(Icons.schedule),
+              title: const Text('Schedule'),
+              subtitle: Text(route['schedule'] ?? 'Not available'),
+            ),
+          ],
+        ),
 
-            // --- END OF FIX ---
-            actions: <Widget>[
-              TextButton(
-                child: const Text('Close'),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ],
+        // --- END OF FIX ---
+        actions: <Widget>[
+          TextButton(
+            child: const Text('Close'),
+            onPressed: () => Navigator.of(context).pop(),
           ),
+        ],
+      ),
     );
   }
 
@@ -1096,6 +1090,12 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
+    if (mounted) {
+      setState(() {
+        _locationPermissionGranted = true;
+      });
+    }
+
     final pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
@@ -1123,14 +1123,14 @@ class _MapScreenState extends State<MapScreen> {
     // Now it expects a Map of the full route data
     final Map<String, dynamic>? routeData =
         await showModalBottomSheet<Map<String, dynamic>>(
-          context: context,
-          isScrollControlled: true,
-          backgroundColor: Colors.white,
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          builder: (context) => const TransportBrowserSheet(),
-        );
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => const TransportBrowserSheet(),
+    );
 
     if (routeData != null) {
       // 👈 1. Call the cleanup function FIRST to clear any old route.
@@ -1150,13 +1150,15 @@ class _MapScreenState extends State<MapScreen> {
     final String? encodedPolyline = routeData['polyline'] as String?;
     if (encodedPolyline == null || encodedPolyline.isEmpty) return;
 
-    List<PointLatLng> polylinePoints = PolylinePoints.decodePolyline(
+    // 1. Create an instance
+    List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
       encodedPolyline,
     );
 
-    if (polylinePoints.isNotEmpty) {
+    // The rest of your code was already correct
+    if (decodedPoints.isNotEmpty) {
       _polylineCoordinates =
-          polylinePoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
+          decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
       setState(() {
         _polylines = {
@@ -1226,44 +1228,44 @@ class _MapScreenState extends State<MapScreen> {
         .doc(userId)
         .snapshots()
         .listen(
-          // Make the callback async
-          (DocumentSnapshot snapshot) async {
-            if (snapshot.exists && mounted) {
-              final data = snapshot.data() as Map<String, dynamic>;
+      // Make the callback async
+      (DocumentSnapshot snapshot) async {
+        if (snapshot.exists && mounted) {
+          final data = snapshot.data() as Map<String, dynamic>;
+          setState(() {
+            _userData = data;
+          });
+
+          // --- ADD THIS BLOCK ---
+          // Start downloading the image in the background
+          final photoUrl = data['profilePictureUrl'] as String?;
+          if (photoUrl != null && photoUrl.isNotEmpty) {
+            precacheImage(NetworkImage(photoUrl), context);
+          }
+          // --- END OF BLOCK ---
+
+          if (!_welcomeMessageShown) {
+            _welcomeMessageShown = true; // Mark as shown immediately
+
+            // --- REVISED LOGIC ---
+            // Step 1: Wait for the welcome toast to show and dismiss.
+            await _showWelcomeToast(data);
+
+            // Step 2: Now that the first dialog is gone, show the reminder.
+            if (mounted && !_tourismReminderShown) {
+              await _showResponsibleTourismReminder();
               setState(() {
-                _userData = data;
+                _tourismReminderShown = true;
               });
-
-              // --- ADD THIS BLOCK ---
-              // Start downloading the image in the background
-              final photoUrl = data['profilePictureUrl'] as String?;
-              if (photoUrl != null && photoUrl.isNotEmpty) {
-                precacheImage(NetworkImage(photoUrl), context);
-              }
-              // --- END OF BLOCK ---
-
-              if (!_welcomeMessageShown) {
-                _welcomeMessageShown = true; // Mark as shown immediately
-
-                // --- REVISED LOGIC ---
-                // Step 1: Wait for the welcome toast to show and dismiss.
-                await _showWelcomeToast(data);
-
-                // Step 2: Now that the first dialog is gone, show the reminder.
-                if (mounted && !_tourismReminderShown) {
-                  await _showResponsibleTourismReminder();
-                  setState(() {
-                    _tourismReminderShown = true;
-                  });
-                }
-                // --- END OF REVISED LOGIC ---
-              }
             }
-          },
-          onError: (e) {
-            print("Error listening to user data: $e");
-          },
-        );
+            // --- END OF REVISED LOGIC ---
+          }
+        }
+      },
+      onError: (e) {
+        print("Error listening to user data: $e");
+      },
+    );
   }
 
   @override
@@ -1305,16 +1307,26 @@ class _MapScreenState extends State<MapScreen> {
     _poiSub = query.snapshots().listen(
       (snapshot) async {
         // Store the fetched data in our state list
-        _allPoiData =
-            snapshot.docs.map((doc) {
-              final data = doc.data();
-              // Manually add the fields needed by createMarker
-              data['id'] = doc.id;
-              final coords = data['coordinates'] as GeoPoint?;
-              data['lat'] = coords?.latitude;
-              data['lng'] = coords?.longitude;
-              return data;
-            }).toList();
+        _allPoiData = snapshot.docs.map((doc) {
+          final data = doc.data();
+          // Manually add the fields needed by createMarker
+          data['id'] = doc.id;
+          dynamic coordsData = data['coordinates'];
+          if (coordsData is GeoPoint) {
+            // Handles data if it's a real GeoPoint
+            data['lat'] = coordsData.latitude;
+            data['lng'] = coordsData.longitude;
+          } else if (coordsData is Map) {
+            // Handles data if it's stored as a Map
+            data['lat'] = coordsData['latitude'];
+            data['lng'] = coordsData['longitude'];
+          } else {
+            // Fallback in case coordinates are missing
+            data['lat'] = null;
+            data['lng'] = null;
+          }
+          return data;
+        }).toList();
 
         // Rebuild the markers with the new data
         await _rebuildMarkers();
@@ -1408,13 +1420,11 @@ class _MapScreenState extends State<MapScreen> {
                                 imageUrl: images[index],
                                 fit: BoxFit.cover,
                                 width: double.infinity,
-                                placeholder:
-                                    (context, url) => const Center(
-                                      child: CircularProgressIndicator(),
-                                    ),
-                                errorWidget:
-                                    (context, url, error) =>
-                                        const Icon(Icons.error),
+                                placeholder: (context, url) => const Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                                errorWidget: (context, url, error) =>
+                                    const Icon(Icons.error),
                               ),
                               // --- END REPLACEMENT ---
                             );
@@ -1430,12 +1440,11 @@ class _MapScreenState extends State<MapScreen> {
                           height: 200,
                           width: double.infinity,
                           fit: BoxFit.cover,
-                          placeholder:
-                              (context, url) => const Center(
-                                child: CircularProgressIndicator(),
-                              ),
-                          errorWidget:
-                              (context, url, error) => const Icon(Icons.error),
+                          placeholder: (context, url) => const Center(
+                            child: CircularProgressIndicator(),
+                          ),
+                          errorWidget: (context, url, error) =>
+                              const Icon(Icons.error),
                         ),
                       ),
 
@@ -1566,41 +1575,36 @@ class _MapScreenState extends State<MapScreen> {
                                 // 1a. Show a dialog to get the new itinerary name
                                 final TextEditingController nameController =
                                     TextEditingController();
-                                final String?
-                                newName = await showDialog<String>(
+                                final String? newName =
+                                    await showDialog<String>(
                                   context: context,
-                                  builder:
-                                      (context) => AlertDialog(
-                                        title: const Text('New Itinerary'),
-                                        content: TextField(
-                                          controller: nameController,
-                                          decoration: const InputDecoration(
-                                            hintText:
-                                                "e.g., 'My Weekend Getaway'",
-                                          ),
-                                          autofocus: true,
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            child: const Text('Cancel'),
-                                            onPressed:
-                                                () =>
-                                                    Navigator.of(context).pop(),
-                                          ),
-                                          TextButton(
-                                            child: const Text('Create'),
-                                            onPressed: () {
-                                              if (nameController
-                                                  .text
-                                                  .isNotEmpty) {
-                                                Navigator.of(
-                                                  context,
-                                                ).pop(nameController.text);
-                                              }
-                                            },
-                                          ),
-                                        ],
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('New Itinerary'),
+                                    content: TextField(
+                                      controller: nameController,
+                                      decoration: const InputDecoration(
+                                        hintText: "e.g., 'My Weekend Getaway'",
                                       ),
+                                      autofocus: true,
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        child: const Text('Cancel'),
+                                        onPressed: () =>
+                                            Navigator.of(context).pop(),
+                                      ),
+                                      TextButton(
+                                        child: const Text('Create'),
+                                        onPressed: () {
+                                          if (nameController.text.isNotEmpty) {
+                                            Navigator.of(
+                                              context,
+                                            ).pop(nameController.text);
+                                          }
+                                        },
+                                      ),
+                                    ],
+                                  ),
                                 );
 
                                 // If the user canceled the naming dialog, stop everything.
@@ -1612,15 +1616,13 @@ class _MapScreenState extends State<MapScreen> {
                                     .doc(_currentUser!.uid)
                                     .collection('itineraries')
                                     .add({
-                                      'name':
-                                          newName, // Use the name from the dialog
-                                      'createdAt': FieldValue.serverTimestamp(),
-                                      'lastModified':
-                                          FieldValue.serverTimestamp(),
-                                    });
-                                itineraryId =
-                                    newDoc
-                                        .id; // Update the ID to the newly created one
+                                  'name':
+                                      newName, // Use the name from the dialog
+                                  'createdAt': FieldValue.serverTimestamp(),
+                                  'lastModified': FieldValue.serverTimestamp(),
+                                });
+                                itineraryId = newDoc
+                                    .id; // Update the ID to the newly created one
                                 // --- END OF NEW LOGIC ---
                               }
 
@@ -1633,11 +1635,10 @@ class _MapScreenState extends State<MapScreen> {
                               if (mounted) {
                                 final result = await Navigator.of(context).push(
                                   MaterialPageRoute(
-                                    builder:
-                                        (context) => EventEditorScreen(
-                                          itineraryId: itineraryId,
-                                          initialPoiData: data,
-                                        ),
+                                    builder: (context) => EventEditorScreen(
+                                      itineraryId: itineraryId,
+                                      initialPoiData: data,
+                                    ),
                                   ),
                                 );
 
@@ -1833,12 +1834,11 @@ class _MapScreenState extends State<MapScreen> {
   Future<Map<String, dynamic>?> _showItinerarySelectorDialog() async {
     if (_currentUser == null) return null;
 
-    final snapshot =
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .collection('itineraries')
-            .get();
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .collection('itineraries')
+        .get();
 
     final itineraries = snapshot.docs;
 
@@ -1853,27 +1853,26 @@ class _MapScreenState extends State<MapScreen> {
           content: SizedBox(
             width: double.maxFinite,
             height: 200,
-            child:
-                itineraries.isEmpty
-                    ? const Center(
-                      child: Text('No itineraries found. Create one!'),
-                    )
-                    : ListView.builder(
-                      itemCount: itineraries.length,
-                      itemBuilder: (context, index) {
-                        final doc = itineraries[index];
-                        final data = doc.data();
-                        return ListTile(
-                          title: Text(data['name'] ?? 'Untitled Itinerary'),
-                          onTap: () {
-                            Navigator.pop(context, {
-                              'id': doc.id,
-                              'name': data['name'],
-                            });
-                          },
-                        );
-                      },
-                    ),
+            child: itineraries.isEmpty
+                ? const Center(
+                    child: Text('No itineraries found. Create one!'),
+                  )
+                : ListView.builder(
+                    itemCount: itineraries.length,
+                    itemBuilder: (context, index) {
+                      final doc = itineraries[index];
+                      final data = doc.data();
+                      return ListTile(
+                        title: Text(data['name'] ?? 'Untitled Itinerary'),
+                        onTap: () {
+                          Navigator.pop(context, {
+                            'id': doc.id,
+                            'name': data['name'],
+                          });
+                        },
+                      );
+                    },
+                  ),
           ),
           actions: [
             TextButton(
@@ -1930,8 +1929,6 @@ class _MapScreenState extends State<MapScreen> {
         _navigationDetails?["distance"] ?? "0 km";
     final initialDurationMinutes =
         int.tryParse(initialDurationText.split(" ").first) ?? 0;
-    final initialDistanceKm =
-        double.tryParse(initialDistanceText.split(" ").first) ?? 0;
 
     if (initialDurationMinutes > 0) {
     } else {}
@@ -2093,8 +2090,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
             markers: _markers,
             polylines: _polylines,
-            myLocationEnabled:
-                _isNavigating ? true : true, // Use custom marker in nav mode
+            myLocationEnabled: _locationPermissionGranted,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             compassEnabled: false, // Hide compass during immersive navigation
@@ -2140,14 +2136,13 @@ class _MapScreenState extends State<MapScreen> {
                                     top: Radius.circular(24),
                                   ),
                                 ),
-                                builder:
-                                    (context) => ProfileMenu(
-                                      userData: _userData,
-                                      onDrawItinerary:
-                                          (coords) => _drawItineraryRoute(
-                                            coords,
-                                          ), // Pass the function
-                                    ),
+                                builder: (context) => ProfileMenu(
+                                  userData: _userData,
+                                  onDrawItinerary: (coords) =>
+                                      _drawItineraryRoute(
+                                    coords,
+                                  ), // Pass the function
+                                ),
                               );
                             },
                           ),
@@ -2202,19 +2197,18 @@ class _MapScreenState extends State<MapScreen> {
                                   },
 
                                   // This builder customizes the look of the items in the EXPANDED list
-                                  items:
-                                      _filters.map((String item) {
-                                        return DropdownMenuItem<String>(
-                                          value: item,
-                                          child: Row(
-                                            children: [
-                                              _getIconForFilter(item),
-                                              const SizedBox(width: 10),
-                                              Text(item),
-                                            ],
-                                          ),
-                                        );
-                                      }).toList(),
+                                  items: _filters.map((String item) {
+                                    return DropdownMenuItem<String>(
+                                      value: item,
+                                      child: Row(
+                                        children: [
+                                          _getIconForFilter(item),
+                                          const SizedBox(width: 10),
+                                          Text(item),
+                                        ],
+                                      ),
+                                    );
+                                  }).toList(),
                                 ),
                               ),
                             ),
@@ -2225,9 +2219,9 @@ class _MapScreenState extends State<MapScreen> {
                             onPressed: () async {
                               final result =
                                   await showSearch<Map<String, dynamic>?>(
-                                    context: context,
-                                    delegate: POISearchDelegate(),
-                                  );
+                                context: context,
+                                delegate: POISearchDelegate(),
+                              );
                               if (result != null) {
                                 final lat = result['lat'] as double?;
                                 final lng = result['lng'] as double?;
@@ -2274,45 +2268,40 @@ class _MapScreenState extends State<MapScreen> {
                       // Transport Options Button
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 250),
-                        transitionBuilder:
-                            (child, animation) =>
-                                ScaleTransition(scale: animation, child: child),
-                        child:
-                            _currentTransportRouteData == null
-                                ? FloatingActionButton(
-                                  key: const ValueKey('transport_button'),
-                                  heroTag: 'transport_button',
-                                  onPressed: _showTransportBrowser,
-                                  backgroundColor: Colors.white,
-                                  child: Icon(
-                                    Icons.directions_bus,
-                                    color: Theme.of(context).primaryColor,
-                                  ),
-                                )
-                                : const SizedBox.shrink(),
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(scale: animation, child: child),
+                        child: _currentTransportRouteData == null
+                            ? FloatingActionButton(
+                                key: const ValueKey('transport_button'),
+                                heroTag: 'transport_button',
+                                onPressed: _showTransportBrowser,
+                                backgroundColor: Colors.white,
+                                child: Icon(
+                                  Icons.directions_bus,
+                                  color: Theme.of(context).primaryColor,
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
                       const SizedBox(height: 12),
 
                       // Custom Route Button
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 250),
-                        transitionBuilder:
-                            (child, animation) =>
-                                ScaleTransition(scale: animation, child: child),
-                        child:
-                            _currentTransportRouteData == null
-                                ? FloatingActionButton(
-                                  key: const ValueKey('route_button'),
-                                  heroTag: 'route_button',
-                                  onPressed: _showCustomRouteSheet,
-                                  backgroundColor:
-                                      Theme.of(context).primaryColor,
-                                  child: const Icon(
-                                    Icons.directions,
-                                    color: Colors.white,
-                                  ),
-                                )
-                                : const SizedBox.shrink(),
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(scale: animation, child: child),
+                        child: _currentTransportRouteData == null
+                            ? FloatingActionButton(
+                                key: const ValueKey('route_button'),
+                                heroTag: 'route_button',
+                                onPressed: _showCustomRouteSheet,
+                                backgroundColor: Theme.of(context).primaryColor,
+                                child: const Icon(
+                                  Icons.directions,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -2321,13 +2310,11 @@ class _MapScreenState extends State<MapScreen> {
                     if (_panelState == NavigationPanelState.hidden)
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 250),
-                        transitionBuilder:
-                            (child, animation) =>
-                                ScaleTransition(scale: animation, child: child),
-                        child:
-                            _currentTransportRouteData == null
-                                ? _buildMapStyleButton()
-                                : const SizedBox.shrink(),
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(scale: animation, child: child),
+                        child: _currentTransportRouteData == null
+                            ? _buildMapStyleButton()
+                            : const SizedBox.shrink(),
                       ),
                   ],
                 ),
@@ -2350,12 +2337,11 @@ class _MapScreenState extends State<MapScreen> {
                 left: 0,
                 right: 0,
                 child: DiscoveryPanel(
-                  onPoiSelected:
-                      (poiData) => _showPoiSheet(
-                        name: poiData['name'] ?? '',
-                        description: poiData['description'] ?? '',
-                        data: poiData,
-                      ),
+                  onPoiSelected: (poiData) => _showPoiSheet(
+                    name: poiData['name'] ?? '',
+                    description: poiData['description'] ?? '',
+                    data: poiData,
+                  ),
                 ),
               ),
           ],
@@ -2363,10 +2349,9 @@ class _MapScreenState extends State<MapScreen> {
           // --- NAVIGATION UI (Overlays everything else) ---
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
-            child:
-                _isNavigating
-                    ? _buildLiveNavigationUI()
-                    : _buildNavigationPanel(),
+            child: _isNavigating
+                ? _buildLiveNavigationUI()
+                : _buildNavigationPanel(),
           ),
         ],
       ),
@@ -2489,9 +2474,8 @@ class _MapScreenState extends State<MapScreen> {
             borderRadius: BorderRadius.circular(16),
           ),
           child: InkWell(
-            onTap:
-                () =>
-                    setState(() => _panelState = NavigationPanelState.expanded),
+            onTap: () =>
+                setState(() => _panelState = NavigationPanelState.expanded),
             borderRadius: BorderRadius.circular(16),
             child: Padding(
               padding: const EdgeInsets.symmetric(
@@ -2574,10 +2558,9 @@ class _MapScreenState extends State<MapScreen> {
                     color: Colors.grey,
                     size: 28,
                   ),
-                  onPressed:
-                      () => setState(
-                        () => _panelState = NavigationPanelState.minimized,
-                      ),
+                  onPressed: () => setState(
+                    () => _panelState = NavigationPanelState.minimized,
+                  ),
                 ),
               ],
             ),
@@ -2734,10 +2717,9 @@ class _MapScreenState extends State<MapScreen> {
             decoration: BoxDecoration(
               color: isSelected ? Colors.blue : Colors.grey[200],
               shape: BoxShape.circle,
-              border:
-                  isSelected
-                      ? Border.all(color: Colors.blueAccent, width: 2)
-                      : null,
+              border: isSelected
+                  ? Border.all(color: Colors.blueAccent, width: 2)
+                  : null,
             ),
             child: Icon(
               icon,
@@ -2863,12 +2845,11 @@ class _MapScreenState extends State<MapScreen> {
                 break;
             }
           },
-          itemBuilder:
-              (context) => const [
-                PopupMenuItem(value: 'Default', child: Text('Default')),
-                PopupMenuItem(value: 'Clean', child: Text('Clean')),
-                PopupMenuItem(value: 'Tourism', child: Text('Tourism')),
-              ],
+          itemBuilder: (context) => const [
+            PopupMenuItem(value: 'Default', child: Text('Default')),
+            PopupMenuItem(value: 'Clean', child: Text('Clean')),
+            PopupMenuItem(value: 'Tourism', child: Text('Tourism')),
+          ],
         ),
       ),
     );

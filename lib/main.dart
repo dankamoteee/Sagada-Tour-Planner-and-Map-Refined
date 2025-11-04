@@ -35,20 +35,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  await FirebaseAppCheck.instance.activate(
-    // 1. For Web:
+  /*await FirebaseAppCheck.instance.activate(
     webProvider: ReCaptchaV3Provider(
       '6Ldm6forAAAAAPCutYaWnsQI8x5KM2ZGUCOfB39J',
     ),
-
-    // 2. For Android:
     androidProvider: AndroidProvider.debug,
-
-    // 3. For iOS:
     appleProvider: AppleProvider.appAttest,
   );
-  print('Firebase App Check activated successfully.'); // Add this line
 
+  print('Firebase App Check activated successfully.'); // Add this line*/
   runApp(const SagadaTourPlannerApp());
 }
 

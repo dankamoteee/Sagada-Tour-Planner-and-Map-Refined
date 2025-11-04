@@ -6,9 +6,10 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <application
-        android:label="sagadatourplannerandmap"
+        android:label="Sagada Tour Planner and Map"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
 
         <meta-data
         android:name="com.google.android.geo.API_KEY"
