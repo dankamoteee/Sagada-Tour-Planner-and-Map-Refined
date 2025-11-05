@@ -1,67 +1,74 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 
 import 'poi_card.dart';
 
 class DiscoveryPanel extends StatefulWidget {
-  final Function(Map<String, dynamic> poiData) onPoiSelected;
+  final Function(Map<String, dynamic>) onPoiSelected;
+  final List<Map<String, dynamic>> nearbyPois; // This is correct!
 
-  const DiscoveryPanel({super.key, required this.onPoiSelected});
+  const DiscoveryPanel({
+    super.key,
+    required this.onPoiSelected,
+    required this.nearbyPois, // This is correct!
+  });
 
   @override
   State<DiscoveryPanel> createState() => _DiscoveryPanelState();
 }
 
 class _DiscoveryPanelState extends State<DiscoveryPanel> {
-  // --- New State Variable ---
-  bool _isExpanded = false; // Manages the collapsed/expanded state
+  bool _isExpanded = false;
 
+  // --- START OF CHANGES ---
+
+  // We ONLY keep the state for "Popular". "Nearby" is now handled by the MapScreen.
   List<Map<String, dynamic>> _popularPois = [];
-  final List<Map<String, dynamic>> _nearbyPois = [];
   bool _isLoadingPopular = true;
-  bool _isLoadingNearby = true;
-  bool _hasFetchedData = false; // Prevents re-fetching on every expand
+  bool _hasFetchedPopular = false; // Changed variable name for clarity
 
-  // --- Changed initState ---
-  // We'll now fetch data only when the panel is first expanded.
   @override
   void initState() {
     super.initState();
     // Data fetching will be triggered on first expansion
   }
 
+  // Simplified to only fetch "Popular"
   void _fetchDataIfNeeded() {
-    if (!_hasFetchedData) {
+    if (!_hasFetchedPopular) {
       _fetchPopularPois();
-      _fetchNearbyPois();
-      _hasFetchedData = true;
+      _hasFetchedPopular = true;
     }
   }
 
-  // (The _fetchPopularPois and _fetchNearbyPois methods remain the same as before)
+  // This function for "Popular" stays the same
   Future<void> _fetchPopularPois() async {
     try {
-      final snapshot =
-          await FirebaseFirestore.instance
-              .collection('POIs')
-              .where('recommended', isEqualTo: true)
-              .get();
+      final snapshot = await FirebaseFirestore.instance
+          .collection('POIs')
+          .where('recommended', isEqualTo: true)
+          .get();
 
-      // --- MODIFY THIS PART ---
-      final pois =
-          snapshot.docs.map((doc) {
-            final data = doc.data();
-            final coords = data['coordinates'] as GeoPoint?;
-            return {
-              'id': doc.id,
-              ...data,
-              'lat': coords?.latitude, // Add lat
-              'lng': coords?.longitude, // Add lng
-            };
-          }).toList();
-      // --- END OF MODIFICATION ---
+      final pois = snapshot.docs.map((doc) {
+        final data = doc.data();
+        dynamic coordsData = data['coordinates'];
+        double? lat, lng;
 
+        if (coordsData is GeoPoint) {
+          lat = coordsData.latitude;
+          lng = coordsData.longitude;
+        } else if (coordsData is Map) {
+          lat = coordsData['latitude'];
+          lng = coordsData['longitude'];
+        }
+
+        return {
+          'id': doc.id,
+          ...data,
+          'lat': lat,
+          'lng': lng,
+        };
+      }).toList();
       if (mounted) {
         setState(() {
           _popularPois = pois;
@@ -74,63 +81,37 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
     }
   }
 
-  Future<void> _fetchNearbyPois() async {
-    // ... (no changes to this method)
-    try {
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      final snapshot =
-          await FirebaseFirestore.instance.collection('POIs').get();
-      List<Map<String, dynamic>> poisWithDistance = [];
-      for (var doc in snapshot.docs) {
-        final data = doc.data();
-        final coords = data['coordinates'] as GeoPoint?;
+  // 🛑 The old _fetchNearbyPois() function is COMPLETELY REMOVED.
+  // 🛑 The old _nearbyPois = [] and _isLoadingNearby = true are COMPLETELY REMOVED.
 
-        if (coords != null) {
-          double distanceInMeters = Geolocator.distanceBetween(
-            position.latitude,
-            position.longitude,
-            coords.latitude,
-            coords.longitude,
-          );
-
-          if (distanceInMeters <= 5000) {
-            data['id'] = doc.id;
-            data['distance'] = distanceInMeters;
-            data['lat'] = coords.latitude; // Add lat
-            data['lng'] = coords.longitude; // Add lng
-            poisWithDistance.add(data);
-          }
-        }
-      }
-      // --- END OF MODIFICATION ---
-
-      // ... (sort and set state)
-    } catch (e) {
-      print("Error fetching nearby POIs: $e");
-      if (mounted) setState(() => _isLoadingNearby = false);
-    }
-  }
-
-  // In discovery_panel.dart -> _buildPoiCarousel() method
+  // --- END OF CHANGES ---
 
   Widget _buildPoiCarousel(List<Map<String, dynamic>> pois, bool isLoading) {
     if (isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
+
+    // --- START OF FIX ---
+    // Use a more helpful message if the list (which is now passed in) is empty.
     if (pois.isEmpty) {
-      return const Center(child: Text("No spots found."));
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            "No places found.\nTry moving around the map to refresh.",
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
     }
+    // --- END OF FIX ---
 
     return ListView.builder(
       scrollDirection: Axis.horizontal,
-      // ADD THIS PADDING:
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 12.0),
       itemCount: pois.length,
       itemBuilder: (context, index) {
         final poi = pois[index];
-        // We add a simple SizedBox here for spacing between cards
         return Padding(
           padding: const EdgeInsets.only(right: 8.0),
           child: PoiCard(poiData: poi, onTap: () => widget.onPoiSelected(poi)),
@@ -138,10 +119,6 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
       },
     );
   }
-
-  // --- The build method is completely replaced ---
-  // In discovery_panel.dart
-  // Replace the entire build method with this final version.
 
   @override
   Widget build(BuildContext context) {
@@ -173,7 +150,7 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
                   _isExpanded = !_isExpanded;
                 });
                 if (_isExpanded) {
-                  _fetchDataIfNeeded();
+                  _fetchDataIfNeeded(); // This now only fetches "Popular"
                 }
               },
               child: Container(
@@ -207,19 +184,14 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
               ),
             ),
 
-            // The content area now uses a LayoutBuilder
+            // The content area
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  // This is the key: only build the content if the parent
-                  // (the Expanded widget) has grown to a reasonable height.
-                  // We check for 50px as a safe minimum.
                   if (constraints.maxHeight < 50) {
-                    // While animating and space is small, render nothing.
                     return const SizedBox.shrink();
                   }
 
-                  // Once enough space is available, fade the content in.
                   return AnimatedOpacity(
                     opacity: _isExpanded ? 1.0 : 0.0,
                     duration: const Duration(milliseconds: 200),
@@ -236,13 +208,18 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
                           Expanded(
                             child: TabBarView(
                               children: [
+                                // "Popular" tab uses its own internal state
                                 _buildPoiCarousel(
                                   _popularPois,
                                   _isLoadingPopular,
                                 ),
+
+                                // --- ⭐️ THIS IS THE FIX ⭐️ ---
+                                // "Nearby" tab now uses the list from MapScreen.
+                                // It's never "loading" because MapScreen already did the work.
                                 _buildPoiCarousel(
-                                  _nearbyPois,
-                                  _isLoadingNearby,
+                                  widget.nearbyPois, // 👈 Use the widget's list
+                                  false, // 👈 Pass 'false' for loading
                                 ),
                               ],
                             ),

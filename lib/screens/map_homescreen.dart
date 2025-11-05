@@ -21,6 +21,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'event_editor_screen.dart';
+import 'package:flutter_tts/flutter_tts.dart'; // 👈 ADD THIS
+import 'package:html_unescape/html_unescape.dart'; // 👈 ADD THIS (for cleaning text)
+import 'package:maps_toolkit/maps_toolkit.dart' as map_tools;
 
 // Enum to manage the panel's visibility state
 enum NavigationPanelState { hidden, minimized, expanded }
@@ -73,9 +76,19 @@ class _MapScreenState extends State<MapScreen> {
   List<Map<String, dynamic>> _allPoiData = []; // To cache Firestore data
   double _currentZoom = 14.0; // To track the current zoom level
   final double _labelZoomThreshold = 14.0; // The zoom level to show labels
+  // --- START: ADD FOR TURN-BY-TURN ---
+  late FlutterTts _flutterTts; // The TTS engine
+  List<Map<String, dynamic>> _navigationSteps = []; // Holds all steps
+  int _currentStepIndex = 0; // Tracks which step we are on
+  String _currentInstruction = ""; // The text to display and speak
+  bool _isMuted = false; // 👈 ADD THIS
+  double _currentSpeed = 0.0; // 👈 ADD THIS
+  List<Map<String, dynamic>> _nearbyPois = []; // 👈 ADD THIS LINE
+  // --- END: ADD FOR TURN-BY-TURN ---
 
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
+  Set<Polygon> _closurePolygons = {};
   List<LatLng> _polylineCoordinates = [];
 
   // Initial location (Sagada center approx)
@@ -290,6 +303,14 @@ class _MapScreenState extends State<MapScreen> {
         final List<LatLng> mainRoutePoints =
             decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
+        // --- ⭐️ ADD THIS CHECK ⭐️ ---
+        bool isBlocked = await _checkRouteForClosures(mainRoutePoints);
+        if (isBlocked) {
+          _endNavigation(); // Clear the route
+          return; // Stop drawing
+        }
+        // --- END OF CHECK ---
+
         allPolylines.add(
           Polyline(
             polylineId: const PolylineId("itinerary_route_main"),
@@ -448,8 +469,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _rebuildMarkers() async {
-    // 👈 ADD THIS LINE: If an itinerary route is visible, do not rebuild the markers.
-    if (_isItineraryRouteVisible) return;
+    // --- START OF FIX ---
+    // If any route (itinerary, regular navigation, or transport) is visible,
+    // do not rebuild the base POI markers, as this will wipe out our route pins.
+    if (_isItineraryRouteVisible ||
+        _navigationDetails != null ||
+        _currentTransportRouteData != null) {
+      return;
+    }
+    // --- END OF FIX ---
 
     final bool showLabels = _currentZoom > _labelZoomThreshold;
 
@@ -507,7 +535,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // This is the new, more powerful function
-  Future<void> _drawRoute(
+  Future<bool> _drawRoute(
     LatLng origin,
     LatLng destination,
     String mode,
@@ -528,7 +556,7 @@ class _MapScreenState extends State<MapScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Failed to get directions: ${response.body}")),
       );
-      return;
+      return false; // 👈 2. Add return
     }
 
     final data = json.decode(response.body);
@@ -537,7 +565,7 @@ class _MapScreenState extends State<MapScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("No route available for $mode mode here.")),
       );
-      return;
+      return false; // 👈 3. Add return
     }
 
     // 2. DECODE THE POLYLINE (The new, correct way)
@@ -551,10 +579,15 @@ class _MapScreenState extends State<MapScreen> {
     _polylineCoordinates =
         decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
-    if (_polylineCoordinates.isEmpty) return;
+    if (_polylineCoordinates.isEmpty) return false; // 👈 4. Add return
 
-    // --- All your existing logic below this line is PERFECT ---
-    // --- No changes needed for the rest of the function ---
+    // --- ⭐️ ADD THIS CHECK ⭐️ ---
+    bool isBlocked = await _checkRouteForClosures(_polylineCoordinates);
+    if (isBlocked) {
+      _endNavigation(); // Clear the route
+      return false; // 👈 5. THIS IS THE KEY FIX
+    }
+    // --- END OF CHECK ---
 
     // 3. Create a new Set to hold all our polylines...
     final Set<Polyline> polylines = {};
@@ -630,6 +663,8 @@ class _MapScreenState extends State<MapScreen> {
       ..._polylineCoordinates,
     ]);
     _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
+
+    return true; // 👈 6. Add return (success!)
   }
 
   // Your old _drawRouteToPoi function now becomes much simpler
@@ -641,23 +676,24 @@ class _MapScreenState extends State<MapScreen> {
     final pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
-    await _drawRoute(
+
+    // --- START OF FIX ---
+    // 1. Capture the return value
+    final bool routeDrawn = await _drawRoute(
       LatLng(pos.latitude, pos.longitude),
       LatLng(destLat, destLng),
       mode,
     );
+
+    // 2. If the route was NOT drawn (blocked or failed), stop here.
+    if (!routeDrawn) return;
+    // --- END OF FIX ---
 
     setState(() {
       _isCustomRoutePreview = false;
     });
 
-    await _drawRoute(
-      LatLng(pos.latitude, pos.longitude),
-      LatLng(destLat, destLng),
-      mode,
-    );
-
-    // We can also trigger the navigation panel here if we want
+    // This code will now ONLY run if the route was drawn successfully
     final details = await _getDirectionsDetails(
       LatLng(pos.latitude, pos.longitude),
       LatLng(destLat, destLng),
@@ -682,6 +718,14 @@ class _MapScreenState extends State<MapScreen> {
     return LatLngBounds(southwest: LatLng(x0, y0), northeast: LatLng(x1, y1));
   }
 
+  String _cleanHtmlString(String htmlString) {
+    // More specific regex to remove only b tags, but preserve the content
+    final RegExp regExp =
+        RegExp(r"<\/?b>", multiLine: true, caseSensitive: true);
+    // Use html_unescape to handle entities like &amp;
+    return HtmlUnescape().convert(htmlString.replaceAll(regExp, ''));
+  }
+
   Future<Map<String, dynamic>?> _getDirectionsDetails(
     LatLng origin,
     LatLng destination,
@@ -703,18 +747,35 @@ class _MapScreenState extends State<MapScreen> {
           "distance": "N/A",
           "duration": "N/A",
           "endAddress": "${destination.latitude}, ${destination.longitude}",
+          "steps": [], // Return empty steps
         };
       }
       if (data["routes"].isNotEmpty) {
         final leg = data["routes"][0]["legs"][0];
+
+        // --- THIS IS THE NEW PART ---
+        final List<dynamic> stepsData = leg["steps"];
+        final List<Map<String, dynamic>> steps = stepsData.map((step) {
+          return {
+            "instruction": _cleanHtmlString(step["html_instructions"]),
+            "distance": step["distance"]["text"],
+            "duration": step["duration"]["text"],
+            "end_location": LatLng(
+              step["end_location"]["lat"],
+              step["end_location"]["lng"],
+            ),
+          };
+        }).toList();
+        // --- END OF NEW PART ---
+
         return {
           "distance": leg["distance"]["text"],
           "duration": leg["duration"]["text"],
           "endAddress": leg["end_address"],
+          "steps": steps, // Return the parsed steps
         };
       }
     }
-
     return null;
   }
 
@@ -912,10 +973,15 @@ class _MapScreenState extends State<MapScreen> {
       // Clear any previous navigation state
       _endNavigation();
 
-      // Step 1: Draw the new custom route
-      await _drawRoute(startLatLng, endLatLng, _currentTravelMode);
+      // --- START OF FIX ---
+      // 1. Capture the return value
+      final bool routeDrawn =
+          await _drawRoute(startLatLng, endLatLng, _currentTravelMode);
 
-      // --- ADD THESE LINES ---
+      // 2. If the route was NOT drawn (blocked or failed), stop here.
+      if (!routeDrawn) return;
+      // --- END OF FIX ---
+
       // Step 2: Get the details for the route we just drew
       final details = await _getDirectionsDetails(
         startLatLng,
@@ -930,7 +996,6 @@ class _MapScreenState extends State<MapScreen> {
         });
         _startNavigation(details);
       }
-      // --- END OF ADDED LINES ---
     }
   }
 
@@ -1101,6 +1166,8 @@ class _MapScreenState extends State<MapScreen> {
     );
     _lastKnownPosition = LatLng(pos.latitude, pos.longitude);
 
+    await _updateNearbyPois(); // 👈 ADD THIS LINE
+
     if (_locationButtonState == LocationButtonState.centered) {
       // From centered -> enter compass mode
       setState(() {
@@ -1119,6 +1186,8 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  // In lib/screens/map_homescreen.dart
+
   void _showTransportBrowser() async {
     // Now it expects a Map of the full route data
     final Map<String, dynamic>? routeData =
@@ -1133,63 +1202,121 @@ class _MapScreenState extends State<MapScreen> {
     );
 
     if (routeData != null) {
-      // 👈 1. Call the cleanup function FIRST to clear any old route.
+      // 1. Call the cleanup function FIRST to clear any old route.
       _endNavigation();
 
-      // 👈 2. THEN, set the state with the new route's data.
+      // 2. THEN, set the state with the new route's data.
+      // This will make our new _buildTransportRouteDetailsCard() widget appear.
       setState(() {
         _currentTransportRouteData = routeData;
       });
 
-      // 👈 3. FINALLY, draw the new route.
-      _drawTransportRoute(routeData);
+      // --- START OF MODIFICATION ---
+      // 3. Check if the route has a polyline to draw.
+      final String? encodedPolyline = routeData['polyline'] as String?;
+
+      if (encodedPolyline != null && encodedPolyline.isNotEmpty) {
+        // 3a. If we have a route, draw it.
+        _drawTransportRoute(routeData);
+      } else {
+        // 3b. If no route, show the SnackBar.
+        // --- START OF FIX ---
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                const Text('This transport type does not have a fixed route.'),
+            behavior: SnackBarBehavior.floating, // Make it float
+            margin: const EdgeInsets.only(
+              bottom: 200.0, // Pushes it up from the bottom (adjust if needed)
+              left: 16.0,
+              right: 16.0,
+            ),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        // --- END OF FIX ---
+      }
+      // --- END OF MODIFICATION ---
     }
   }
 
-  void _drawTransportRoute(Map<String, dynamic> routeData) {
+  void _drawTransportRoute(Map<String, dynamic> routeData) async {
     final String? encodedPolyline = routeData['polyline'] as String?;
     if (encodedPolyline == null || encodedPolyline.isEmpty) return;
 
-    // 1. Create an instance
     List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
       encodedPolyline,
     );
 
-    // The rest of your code was already correct
     if (decodedPoints.isNotEmpty) {
       _polylineCoordinates =
           decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
+      final LatLng startPoint = _polylineCoordinates.first;
+      final LatLng endPoint = _polylineCoordinates.last;
+
+      final BitmapDescriptor startIcon = await _createCircleMarkerBitmap(
+        Colors.purple,
+        size: 40,
+      );
+      final BitmapDescriptor endIcon = await _createCircleMarkerBitmap(
+        Colors.purple,
+        size: 40,
+      );
+
+      // --- START OF FIX ---
+      // This setState block and the animateCamera call MUST be inside
+      // the 'if (decodedPoints.isNotEmpty)' block.
       setState(() {
         _polylines = {
           Polyline(
             polylineId: PolylineId(routeData['routeName'] ?? "transport_route"),
             color: Colors.purple,
-            // --- CHANGES BELOW ---
-            width: 8, // Make the line thicker (easier to tap)
-            jointType: JointType.round, // Makes the line corners look smoother
+            width: 8,
+            jointType: JointType.round,
             startCap: Cap.roundCap,
             endCap: Cap.roundCap,
-            // --- END OF CHANGES ---
             points: _polylineCoordinates,
             consumeTapEvents: true,
             onTap: () {
-              // Add a print statement for debugging
               print("Polyline for '${routeData['routeName']}' was tapped!");
               _showTransportRouteDetailsDialog();
             },
           ),
         };
+
+        // Add the markers to the map
+        _markers.add(
+          Marker(
+            markerId: const MarkerId('transport_start'),
+            position: startPoint,
+            icon: startIcon,
+            anchor: const Offset(0.5, 0.5), // Center the icon
+          ),
+        );
+        _markers.add(
+          Marker(
+            markerId: const MarkerId('transport_end'),
+            position: endPoint,
+            icon: endIcon,
+            anchor: const Offset(0.5, 0.5), // Center the icon
+          ),
+        );
       });
 
       LatLngBounds bounds = _boundsFromLatLngList(_polylineCoordinates);
       _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 60.0));
+      // --- END OF FIX ---
     }
   }
 
   @override
   void initState() {
     super.initState();
+
+    // --- ADD THIS ---
+    _flutterTts = FlutterTts();
+    // --- END ---
 
     // Assign to the existing class variable, don't create a new one
     _authSubscription = FirebaseAuth.instance.authStateChanges().listen((
@@ -1210,6 +1337,7 @@ class _MapScreenState extends State<MapScreen> {
 
     _loadCustomIcons().then((_) {
       _listenToPOIs();
+      _listenToClosures();
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1270,10 +1398,21 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
-    _authSubscription?.cancel(); // Don't forget to cancel the subscription
+    _authSubscription?.cancel();
     _userDataSubscription?.cancel();
     _poiSub?.cancel();
+    _closureSub?.cancel();
     _mapController?.dispose();
+
+    // --- ADD THIS ---
+    _flutterTts.stop();
+    // --- END ---
+
+    // --- ADD THESE TWO LINES ---
+    _compassSubscription?.cancel();
+    _positionStreamSubscription?.cancel();
+    // --- END OF FIX ---
+
     super.dispose();
   }
 
@@ -1330,6 +1469,9 @@ class _MapScreenState extends State<MapScreen> {
 
         // Rebuild the markers with the new data
         await _rebuildMarkers();
+
+        // 👈 ADD THIS LINE
+        await _updateNearbyPois();
       },
       onError: (e) {
         if (mounted) {
@@ -1351,8 +1493,21 @@ class _MapScreenState extends State<MapScreen> {
     _saveToRecentlyViewed(data);
 
     // --- 1. GET ALL THE DATA ---
-    final images = (data['images'] as List?)?.cast<String>() ?? [];
+    // --- 1. GET ALL THE DATA (WITH FIX) ---
+
+    // Safely check the type of 'images'
+    final imagesData = data['images'];
+    List<String> images = []; // Initialize as an empty list
+
+    if (imagesData is List) {
+      // If it's a list, cast it
+      images = imagesData.cast<String>();
+    }
+
+    // Safely get the single 'imageUrl'
     final singleImage = data['imageUrl'] as String?;
+
+    // --- END OF FIX ---
 
     // Get the POI type to decide which details to show
     final poiType = data['type'] as String?;
@@ -1560,6 +1715,14 @@ class _MapScreenState extends State<MapScreen> {
                             icon: const Icon(Icons.playlist_add),
                             label: const Text("Add to Plan"),
                             onPressed: () async {
+                              if (_currentUser == null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text(
+                                          'You must be logged in to add to a plan.')),
+                                );
+                                return;
+                              }
                               // 1. Show the itinerary selector to get the trip ID
                               final Map<String, dynamic>? selectedItinerary =
                                   await _showItinerarySelectorDialog();
@@ -1770,6 +1933,8 @@ class _MapScreenState extends State<MapScreen> {
   // In map_homescreen.dart
   // Replace the whole function with this one.
 
+  // In lib/screens/map_homescreen.dart
+
   Future<void> _saveToRecentlyViewed(Map<String, dynamic> poiData) async {
     if (_currentUser == null) return; // Only save if a user is logged in
 
@@ -1785,15 +1950,19 @@ class _MapScreenState extends State<MapScreen> {
         .doc(poiId);
 
     // --- START OF FIX ---
-    // Safely get the list of images, which might be null.
-    final imagesList = poiData['images'] as List?;
+    // Safely check the type of 'images'
+    final imagesData = poiData['images'];
+    List<dynamic>? imagesList;
+    if (imagesData is List) {
+      imagesList = imagesData;
+    }
 
     // Determine the image URL safely.
     String? recentImageUrl;
     if (imagesList != null && imagesList.isNotEmpty) {
-      recentImageUrl = imagesList[0] as String?;
+      recentImageUrl = imagesList[0] as String?; // Cast here is safer
     } else {
-      // Fallback to the single imageUrl field if 'images' is missing or empty
+      // Fallback to the single imageUrl field if 'images' is not a list or is empty
       recentImageUrl = poiData['imageUrl'] as String?;
     }
     // --- END OF FIX ---
@@ -1893,6 +2062,172 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  /// Checks if a route passes through any known closures.
+  /// Returns 'true' if the route is blocked, 'false' if it's clear.
+  Future<bool> _checkRouteForClosures(List<LatLng> routePoints) async {
+    if (_closurePolygons.isEmpty || routePoints.isEmpty) {
+      return false; // No closures or route, so it's "clear"
+    }
+
+    // Check every point on the polyline
+    for (final point in routePoints) {
+      // Against every closure polygon
+      for (final polygon in _closurePolygons) {
+        // --- (This part is the same) ---
+        bool isInside = map_tools.PolygonUtil.containsLocation(
+          map_tools.LatLng(point.latitude, point.longitude), // 1. The point
+          polygon.points
+              .map((p) => map_tools.LatLng(p.latitude, p.longitude))
+              .toList(), // 2. The polygon
+          false, // 3. The 'geodesic' argument
+        );
+
+        if (isInside) {
+          // --- START OF REVAMPED DIALOG ---
+          // This route is blocked! Show a warning.
+          final bool? proceed = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) {
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                insetPadding: const EdgeInsets.symmetric(
+                    horizontal: 24.0, vertical: 24.0),
+
+                // Use the title slot for the icon and main text
+                title: Column(
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      color: Colors.amber.shade800,
+                      size: 64,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Route Advisory',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+
+                // Use the content slot for the description
+                content: const Text(
+                  'This route passes through a known road closure. This could be due to a landslide, event, or other hazard.\n\nAre you sure you want to continue?',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 15, height: 1.4),
+                ),
+
+                actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                actionsAlignment: MainAxisAlignment.spaceBetween,
+                actions: [
+                  // "Proceed Anyway" - a text button to show it's not the default
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.red.shade700,
+                      textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    child: const Text("Proceed Anyway"),
+                    onPressed: () => Navigator.of(context).pop(true),
+                  ),
+
+                  // "Cancel Route" - the "safe" and default-looking choice
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    child: const Text("Cancel Route"),
+                    onPressed: () => Navigator.of(context).pop(false),
+                  ),
+                ],
+              );
+            },
+          );
+          // --- END OF REVAMPED DIALOG ---
+
+          return !(proceed ??
+              false); // If user proceeds, route is not "blocked"
+        }
+      }
+    }
+
+    return false; // No intersections found, route is clear.
+  }
+
+  Future<void> _updateNearbyPois() async {
+    // 1. We need permission to get location
+    if (!_locationPermissionGranted) {
+      print("Nearby: Location permission not granted.");
+      return;
+    }
+
+    Position? position;
+    try {
+      // 2. Get the user's current location
+      position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 5), // Don't hang forever
+      );
+    } catch (e) {
+      print("Error getting location for 'Nearby' feature: $e");
+      return; // Can't proceed
+    }
+
+    if (!mounted) return;
+    final userLocation = LatLng(position.latitude, position.longitude);
+
+    // 3. Use the cached POI list.
+    if (_allPoiData.isEmpty) {
+      print("Nearby: POI data is empty, skipping calculation.");
+      return;
+    }
+
+    // 4. Calculate distances and filter
+    final List<Map<String, dynamic>> nearbyList = [];
+    for (final poi in _allPoiData) {
+      final lat = poi['lat'] as double?;
+      final lng = poi['lng'] as double?;
+
+      if (lat != null && lng != null) {
+        final double distance = Geolocator.distanceBetween(
+          userLocation.latitude,
+          userLocation.longitude,
+          lat,
+          lng,
+        );
+
+        // 5. Set a radius (e.g., 2000 meters = 2km)
+        if (distance <= 2000) {
+          // Create a copy of the map and add the distance
+          final newPoiData = Map<String, dynamic>.from(poi);
+          newPoiData['distance'] = distance; // Add distance for sorting
+          nearbyList.add(newPoiData);
+        }
+      }
+    }
+
+    // 6. Sort the list by distance (closest first)
+    nearbyList.sort(
+        (a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
+
+    // 7. Update the state
+    if (mounted) {
+      setState(() {
+        _nearbyPois = nearbyList;
+      });
+      print("Nearby: Updated list with ${_nearbyPois.length} places.");
+    }
+  }
+
   // Ends navigation and hides the panel
   void _endNavigation() {
     _positionStreamSubscription?.cancel();
@@ -1913,47 +2248,89 @@ class _MapScreenState extends State<MapScreen> {
             m.markerId.value == 'start_pin' ||
             m.markerId.value == 'end_pin' ||
             m.markerId.value == 'distance_marker' ||
-            m.markerId.value.startsWith('itinerary_stop_'),
+            m.markerId.value.startsWith('itinerary_stop_') ||
+            m.markerId.value == 'transport_start' ||
+            m.markerId.value == 'transport_end',
       ); // Also remove distance marker
     });
   }
 
-  /// Decides which panel to show based on the current state
+  int _parseDurationToMinutes(String durationText) {
+    int totalMinutes = 0;
+    // Regex to find numbers followed by "hour" or "min"
+    final RegExp hourRegex = RegExp(r'(\d+)\s+(hour|hours)');
+    final RegExp minRegex = RegExp(r'(\d+)\s+(min|mins)');
+
+    final hourMatch = hourRegex.firstMatch(durationText);
+    final minMatch = minRegex.firstMatch(durationText);
+
+    if (hourMatch != null) {
+      totalMinutes += (int.tryParse(hourMatch.group(1) ?? '0') ?? 0) * 60;
+    }
+
+    if (minMatch != null) {
+      totalMinutes += int.tryParse(minMatch.group(1) ?? '0') ?? 0;
+    }
+
+    // Fallback for simple "25 min" strings that might not match
+    if (totalMinutes == 0 &&
+        (durationText.contains("min") || durationText.contains("mins"))) {
+      try {
+        return int.tryParse(durationText.split(" ").first) ?? 0;
+      } catch (e) {
+        print("Could not parse duration: $e");
+        return 0;
+      }
+    }
+
+    return totalMinutes;
+  }
 
   /// Enters the immersive turn-by-turn navigation mode.
   void _enterLiveNavigation() {
-    // ... (the initial calculation part remains the same)
-    final String initialDurationText =
-        _navigationDetails?["duration"] ?? "0 min";
-    final String initialDistanceText =
-        _navigationDetails?["distance"] ?? "0 km";
-    final initialDurationMinutes =
-        int.tryParse(initialDurationText.split(" ").first) ?? 0;
+    // --- THIS FUNCTION IS REWRITTEN ---
 
-    if (initialDurationMinutes > 0) {
-    } else {}
+    // 1. Get the steps from the details we already fetched
+    final List<Map<String, dynamic>>? steps =
+        _navigationDetails?["steps"] as List<Map<String, dynamic>>?;
 
-    _liveDistance = initialDistanceText;
-    _liveDuration = initialDurationText;
-    _liveEta = DateFormat(
-      'h:mm a',
-    ).format(DateTime.now().add(Duration(minutes: initialDurationMinutes)));
+    if (steps == null || steps.isEmpty) {
+      print("No steps found, cannot start navigation.");
+      return;
+    }
 
+    // 2. Set state
     setState(() {
+      _navigationSteps = steps;
+      _currentStepIndex = 0;
       _isNavigating = true;
       _panelState = NavigationPanelState.hidden;
     });
 
+    // 3. Set the first instruction
+    _updateNavigationStep(0, isFirstStep: true);
+
+    // 4. Start the position listener
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 20,
-      ), // Update every 20 meters
+        distanceFilter: 1, // Get very frequent updates
+      ),
     ).listen((Position position) async {
-      // Make the callback async
+      if (!_isNavigating || _currentStepIndex >= _navigationSteps.length)
+        return;
 
-      // (The camera filtering logic remains the same)
+      final userLocation = LatLng(position.latitude, position.longitude);
+
+      // --- ⭐️ ADD THIS BLOCK ⭐️ ---
+      setState(() {
+        // position.speed is in meters/second. Convert to km/h (m/s * 3.6)
+        _currentSpeed = position.speed * 3.6;
+      });
+      // --- END OF ADDITION ---
+
+      // --- Camera Logic (no changes) ---
       double distanceMoved = 0;
       if (_lastKnownPosition != null) {
         distanceMoved = Geolocator.distanceBetween(
@@ -1969,34 +2346,55 @@ class _MapScreenState extends State<MapScreen> {
         _mapController?.animateCamera(
           CameraUpdate.newCameraPosition(
             CameraPosition(
-              target: LatLng(position.latitude, position.longitude),
+              target: userLocation,
               zoom: 17.5,
               tilt: 50.0,
               bearing: newBearing,
             ),
           ),
         );
-        _lastKnownPosition = LatLng(position.latitude, position.longitude);
+        _lastKnownPosition = userLocation;
         _lastKnownBearing = newBearing;
       }
+      // --- End Camera Logic ---
 
-      // ----------- NEW ACCURATE RECALCULATION LOGIC -----------
+      // --- NEW STEP TRACKING LOGIC ---
+      // Get the end location of the *current* step
+      final LatLng currentStepEnd =
+          _navigationSteps[_currentStepIndex]["end_location"];
+
+      // Calculate distance to the end of this step
+      final double distanceToStepEnd = Geolocator.distanceBetween(
+        userLocation.latitude,
+        userLocation.longitude,
+        currentStepEnd.latitude,
+        currentStepEnd.longitude,
+      );
+
+      // Check if user is "close enough" to advance to the next step
+      if (distanceToStepEnd < 20.0) {
+        // 20-meter threshold
+        setState(() {
+          _currentStepIndex++;
+        });
+        _updateNavigationStep(_currentStepIndex);
+      }
+      // --- END STEP TRACKING ---
+
+      // --- Recalculate Total (for bottom bar) ---
       if (_lastDestination != null) {
-        // Re-fetch the route from the user's new position
         final newDetails = await _getDirectionsDetails(
-          LatLng(position.latitude, position.longitude),
+          userLocation,
           _lastDestination!,
           _currentTravelMode,
         );
 
         if (newDetails != null) {
           final int remainingMinutes =
-              int.tryParse(newDetails["duration"].split(" ").first) ?? 0;
-          final newEta = DateTime.now().add(
-            Duration(minutes: remainingMinutes),
-          );
+              _parseDurationToMinutes(newDetails["duration"]);
+          final newEta =
+              DateTime.now().add(Duration(minutes: remainingMinutes));
 
-          // Update state with the ACCURATE data from the API
           setState(() {
             _liveDistance = newDetails["distance"];
             _liveDuration = newDetails["duration"];
@@ -2011,10 +2409,18 @@ class _MapScreenState extends State<MapScreen> {
   void _exitLiveNavigation() {
     // Stop the immersive camera tracking
     _positionStreamSubscription?.cancel();
+    _positionStreamSubscription = null; // 👈 ADD THIS
 
     setState(() {
       _isNavigating = false;
       _panelState = NavigationPanelState.expanded; // Show details again
+      // --- ADD THIS BLOCK ---
+      _navigationSteps = [];
+      _currentStepIndex = 0;
+      _currentInstruction = "";
+      _flutterTts.stop();
+      _currentSpeed = 0.0;
+      // --- END BLOCK ---
     });
 
     // 👇 UPDATE THIS PART
@@ -2063,6 +2469,210 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
+  /// Formats an instruction for display and speech.
+  String _formatInstruction(String instruction) {
+    if (instruction.isEmpty) return "";
+    // Trim whitespace
+    instruction = instruction.trim();
+    // Capitalize the first letter
+    String formatted = instruction[0].toUpperCase() + instruction.substring(1);
+    // Ensure it ends with a period
+    if (!formatted.endsWith('.') &&
+        !formatted.endsWith('!') &&
+        !formatted.endsWith('?')) {
+      formatted += '.';
+    }
+    return formatted;
+  }
+
+  /// Sets the current instruction and speaks it
+  void _updateNavigationStep(int stepIndex, {bool isFirstStep = false}) {
+    if (stepIndex >= _navigationSteps.length) {
+      // We've finished the last step
+      final String arrivalMessage = "You have arrived at your destination.";
+      setState(() {
+        _currentInstruction = arrivalMessage;
+      });
+
+      if (!_isMuted) {
+        _flutterTts.speak(_currentInstruction);
+      }
+
+      _exitLiveNavigation(); // Exit nav mode
+      return;
+    }
+
+    // Get the current step's details
+    final step = _navigationSteps[stepIndex];
+    String instruction =
+        step["instruction"]; // This is cleaned and has proper caps
+    String distance = step["distance"];
+
+    String instructionToDisplay;
+    String instructionToSpeak;
+
+    if (isFirstStep) {
+      // For display, use Google's capitalized string
+      instructionToDisplay = "$instruction for $distance.";
+      // For speech, "Head..." sounds more natural
+      instructionToSpeak = "Head $instruction and continue for $distance.";
+    } else {
+      // For all other steps, they are the same
+      instructionToDisplay = instruction;
+      instructionToSpeak = instruction;
+    }
+
+    setState(() {
+      // Use the formatter to add a period, etc.
+      _currentInstruction = _formatInstruction(instructionToDisplay);
+    });
+
+    if (!_isMuted) {
+      // Speak the version *without* the extra punctuation
+      _flutterTts.speak(instructionToSpeak);
+    }
+  }
+
+  /// Displays a custom dialog with details about a road closure.
+  void _showClosureDetails(Map<String, dynamic> closureData) {
+    // --- START OF NEW DATA EXTRACTION ---
+    // Get data with fallbacks
+    final String name = closureData['name'] ?? 'Closure Information';
+    final String type = closureData['type'] ?? 'Notice';
+    final String details = closureData['details'] ?? 'No details provided.';
+    String postedAtText = 'Report date not available.';
+
+    // Check for 'postedAt' field instead of 'validUntil'
+    if (closureData['postedAt'] != null &&
+        closureData['postedAt'] is Timestamp) {
+      final DateTime postedAt = (closureData['postedAt'] as Timestamp).toDate();
+      // Format it to be readable
+      postedAtText =
+          'Reported on: ${DateFormat.yMMMd().add_jm().format(postedAt)}';
+    }
+
+    // Dynamically choose an icon and color based on the 'type'
+    IconData closureIcon;
+    Color iconColor;
+    switch (type.toLowerCase()) {
+      case 'landslide':
+        closureIcon = Icons.warning_amber_rounded;
+        iconColor = Colors.brown.shade600;
+        break;
+      case 'event':
+        closureIcon = Icons.event;
+        iconColor = Colors.blue.shade700;
+        break;
+      case 'construction':
+        closureIcon = Icons.construction;
+        iconColor = Colors.orange.shade800;
+        break;
+      default:
+        closureIcon = Icons.traffic;
+        iconColor = Colors.red.shade700;
+    }
+    // --- END OF NEW DATA EXTRACTION ---
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+
+          // --- UPDATED TITLE SECTION ---
+          title: Column(
+            children: [
+              Icon(
+                closureIcon, // Use the new dynamic icon
+                color: iconColor, // Use the new dynamic color
+                size: 64,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                name, // e.g., "Landslide at Km. 55"
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+
+          // --- UPDATED CONTENT SECTION ---
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // "Type" Chip
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: Text(
+                  type.toUpperCase(), // e.g., "LANDSLIDE"
+                  style: TextStyle(
+                    color: iconColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // "Details"
+              Text(
+                details, // e.g., "Road is completely impassable..."
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 15, height: 1.4),
+              ),
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
+
+              // "Posted At"
+              Text(
+                postedAtText, // e.g., "Reported on: Nov 5, 2025..."
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontStyle: FontStyle.italic,
+                  color: Colors.black54,
+                ),
+              ),
+            ],
+          ),
+
+          // --- (Button is the same) ---
+          actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Theme.of(context).primaryColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                child: const Text('Okay, Got It'),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   // === UI ===
   @override
   Widget build(BuildContext context) {
@@ -2090,14 +2700,25 @@ class _MapScreenState extends State<MapScreen> {
             ),
             markers: _markers,
             polylines: _polylines,
+            polygons: _closurePolygons,
             myLocationEnabled: _locationPermissionGranted,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             compassEnabled: false, // Hide compass during immersive navigation
           ),
-          _buildItinerarySummaryPanel(), // 👈 ADD THIS WIDGET
           // --- PASTE THE COMPASS WIDGET HERE AND UPDATE IT ---
-          Positioned(top: paddingTop + 70, right: 12, child: CompassWidget()),
+          // --- Compass Widget (now animated) ---
+          AnimatedPositioned(
+            // Check if nav is active AND has an instruction to display
+            top: _isNavigating && _currentInstruction.isNotEmpty
+                ? (paddingTop + 110) // Pushed down
+                : (paddingTop + 70), // Original position
+            right: 12,
+            duration: const Duration(milliseconds: 300), // Animation duration
+            curve: Curves.easeInOut, // Animation curve
+            child: CompassWidget(),
+          ),
+          // --- END OF COMPASS FIX ---
 
           // --- ITINERARY-SPECIFIC UI (Only visible when itinerary route is active) ---
           if (_isItineraryRouteVisible) ...[
@@ -2220,7 +2841,9 @@ class _MapScreenState extends State<MapScreen> {
                               final result =
                                   await showSearch<Map<String, dynamic>?>(
                                 context: context,
-                                delegate: POISearchDelegate(),
+                                delegate: POISearchDelegate(
+                                  userLocation: _lastKnownPosition,
+                                ),
                               );
                               if (result != null) {
                                 final lat = result['lat'] as double?;
@@ -2320,14 +2943,6 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ),
 
-            // "Clear Transport Route" button on the left
-            if (_currentTransportRouteData != null)
-              Positioned(
-                bottom: 100,
-                left: 16,
-                child: _buildClearRouteButton(),
-              ),
-
             // Discover Places Panel
             if (!_isNavigating &&
                 _panelState == NavigationPanelState.hidden &&
@@ -2337,6 +2952,7 @@ class _MapScreenState extends State<MapScreen> {
                 left: 0,
                 right: 0,
                 child: DiscoveryPanel(
+                  nearbyPois: _nearbyPois,
                   onPoiSelected: (poiData) => _showPoiSheet(
                     name: poiData['name'] ?? '',
                     description: poiData['description'] ?? '',
@@ -2345,6 +2961,18 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ),
           ],
+
+          // --- ADD THIS WIDGET ---
+          // Shows the details for the selected transport route
+          // This will appear *instead* of the DiscoveryPanel
+          if (_currentTransportRouteData != null && !_isNavigating)
+            _buildTransportRouteDetailsCard(),
+          // --- END OF ADDITION ---
+
+          // --- ⭐️ ADD THIS WIDGET ⭐️ ---
+          // Shows the speedometer during driving navigation
+          _buildSpeedIndicator(),
+          // --- END OF ADDITION ---
 
           // --- NAVIGATION UI (Overlays everything else) ---
           AnimatedSwitcher(
@@ -2858,8 +3486,10 @@ class _MapScreenState extends State<MapScreen> {
   Widget _buildLiveNavigationUI() {
     return Stack(
       children: [
-        // You can add a top panel for turn-by-turn instructions here in the future
-        _buildNavigationInfoBar(),
+        // --- THIS IS THE CHANGE ---
+        _buildTurnByTurnBanner(), // The new top banner
+        _buildNavigationInfoBar(), // The existing bottom bar
+        // --- END OF CHANGE ---
       ],
     );
   }
@@ -2958,17 +3588,6 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Widget _buildClearRouteButton() {
-    return FloatingActionButton.small(
-      // A smaller FAB is less intrusive
-      heroTag: 'clear_route_button',
-      onPressed:
-          _endNavigation, // Your existing function already does everything we need!
-      backgroundColor: Colors.white,
-      child: Icon(Icons.close, color: Colors.grey.shade700),
-    );
-  }
-
   Widget _buildClearItineraryButton() {
     return FloatingActionButton.small(
       heroTag: 'clear_itinerary_button',
@@ -3030,5 +3649,231 @@ class _MapScreenState extends State<MapScreen> {
         ),
       ),
     );
+  }
+  // In lib/screens/map_homescreen.dart -> _MapScreenState
+
+  /// A new widget to display transport route details at the bottom of the screen.
+  Widget _buildTransportRouteDetailsCard() {
+    if (_currentTransportRouteData == null) return const SizedBox.shrink();
+
+    final route = _currentTransportRouteData!;
+    final String vehicleType = route['routeName'] ?? 'Transport';
+    final String fare = route['fareDetails'] ?? 'N/A';
+    final String schedule = route['schedule'] ?? 'N/A';
+
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: Card(
+        margin: const EdgeInsets.all(12.0),
+        elevation: 8,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16), // Adjusted padding
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // --- FIX 1: Title and Close Button in one Row ---
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "Route: $vehicleType",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                  ),
+                  // --- FIX 1: Move the close button here ---
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.grey),
+                    onPressed: _endNavigation, // Re-use existing function
+                  ),
+                ],
+              ),
+              // --- FIX 2: Use ListTiles for readable text ---
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.money_outlined, color: Colors.green),
+                title: const Text("Fare Details",
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(fare), // Text will wrap automatically
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading:
+                    const Icon(Icons.schedule_outlined, color: Colors.blue),
+                title: const Text("Schedule",
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(schedule), // Text will wrap automatically
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTurnByTurnBanner() {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12.0,
+      left: 12.0,
+      right: 12.0,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: _currentInstruction.isEmpty
+            ? const SizedBox.shrink()
+            : Card(
+                elevation: 8,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                color: Theme.of(context).primaryColor,
+                child: Padding(
+                  // --- ADJUST PADDING ---
+                  padding: const EdgeInsets.only(
+                      left: 16.0, right: 8.0, top: 8.0, bottom: 8.0),
+                  // --- START OF FIX: Use a Row ---
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          _currentInstruction,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      // --- The new mute button ---
+                      IconButton(
+                        icon: Icon(
+                          _isMuted ? Icons.volume_off : Icons.volume_up,
+                          color: Colors.white,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _isMuted = !_isMuted;
+                            if (!_isMuted) {
+                              // Speak current instruction if unmuting
+                              _flutterTts.speak(_currentInstruction);
+                            } else {
+                              _flutterTts.stop();
+                            }
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  // --- END OF FIX ---
+                ),
+              ),
+      ),
+    );
+  }
+
+  /// Builds the speed indicator widget.
+  Widget _buildSpeedIndicator() {
+    // Only show if navigating AND driving
+    if (!_isNavigating || _currentTravelMode != "driving") {
+      return const SizedBox.shrink();
+    }
+
+    return Positioned(
+      bottom: 120, // Place it above the main navigation bar
+      left: 12,
+      child: Card(
+        elevation: 8,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _currentSpeed.toStringAsFixed(0), // The speed
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Text(
+                "km/h",
+                style: TextStyle(fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _closureSub;
+
+  void _listenToClosures() {
+    print("Setting up road closure listener..."); // 1. Check if it's called
+    _closureSub?.cancel();
+    _closureSub = FirebaseFirestore.instance
+        .collection('roadClosures')
+        .snapshots()
+        .listen((snapshot) {
+      // 2. Check if we got any documents
+      print(
+          "✅ Closure listener fired! Found ${snapshot.docs.length} documents.");
+
+      Set<Polygon> newPolygons = {};
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final List<dynamic> areaPoints = data['area'] ?? [];
+
+        // 3. Check the data for each document
+        print(
+            "   - Processing doc ${doc.id}: Found ${areaPoints.length} points in 'area' field.");
+
+        if (areaPoints.isNotEmpty) {
+          final List<LatLng> polygonCoords = areaPoints.map((point) {
+            // Handle both GeoPoint and Map data from Firestore
+            if (point is GeoPoint) {
+              return LatLng(point.latitude, point.longitude);
+            } else if (point is Map) {
+              return LatLng(
+                  point['latitude'] ?? 0.0, point['longitude'] ?? 0.0);
+            }
+            return const LatLng(0, 0); // Fallback
+          }).toList();
+
+          newPolygons.add(
+            Polygon(
+              polygonId: PolygonId(doc.id),
+              points: polygonCoords,
+              fillColor: Colors.red.withOpacity(0.4),
+              strokeColor: Colors.red.withOpacity(0.8),
+              strokeWidth: 2,
+              consumeTapEvents: true,
+              onTap: () {
+                _showClosureDetails(data); // 👈 *** ADD THIS LINE ***
+              },
+            ),
+          );
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          // 4. Check if setState is being called
+          print("   - setState called with ${newPolygons.length} polygons.");
+          _closurePolygons = newPolygons;
+        });
+      }
+    }, onError: (error) {
+      // 5. Add an error handler!
+      print("❌ ERROR in closure listener: $error");
+    });
   }
 }

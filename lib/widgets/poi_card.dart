@@ -7,12 +7,29 @@ class PoiCard extends StatelessWidget {
 
   const PoiCard({super.key, required this.poiData, required this.onTap});
 
+  // In lib/widgets/poi_card.dart
+
   @override
   Widget build(BuildContext context) {
-    // Get the image URL, same as before.
-    final images = poiData['images'] as List?;
-    final imageUrl =
-        (images != null && images.isNotEmpty) ? images[0] : poiData['imageUrl'];
+    // --- START OF FIX ---
+
+    // Safely check the type of 'images'
+    final imagesData = poiData['images'];
+    List<dynamic>? images;
+    if (imagesData is List) {
+      images = imagesData;
+    }
+
+    // Safely get the imageUrl
+    String? imageUrl;
+    if (images != null && images.isNotEmpty) {
+      imageUrl = images[0] as String?; // Cast here, as it's safer
+    } else {
+      // Fallback to 'imageUrl' if 'images' is not a list or is empty
+      imageUrl = poiData['imageUrl'] as String?;
+    }
+
+    // --- END OF FIX ---
 
     // Get the distance text, same as before.
     final distance = poiData['distance'] as double?;
@@ -29,11 +46,10 @@ class PoiCard extends StatelessWidget {
       onTap: onTap,
       child: Container(
         width: 160,
-        // Set a fixed height for the card. This is crucial.
-        // It must fit within the space provided by the DiscoveryPanel.
+        // ... (rest of the widget is unchanged)
         height: 140,
-        clipBehavior:
-            Clip.antiAlias, // This ensures the borderRadius is respected by children.
+        clipBehavior: Clip
+            .antiAlias, // This ensures the borderRadius is respected by children.
         decoration: BoxDecoration(
           color: Colors.grey[300], // A fallback color
           borderRadius: BorderRadius.circular(16),
@@ -50,27 +66,24 @@ class PoiCard extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             // --- REPLACE THE IMAGE WIDGET ---
-            if (imageUrl != null)
+            if (imageUrl != null && imageUrl.isNotEmpty) // Added empty check
               CachedNetworkImage(
                 imageUrl: imageUrl,
                 fit: BoxFit.cover,
                 // Show a loading spinner while the image downloads
-                placeholder:
-                    (context, url) => const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2.0),
-                    ),
+                placeholder: (context, url) => const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2.0),
+                ),
                 // Show an error icon if the download fails
-                errorWidget:
-                    (context, url, error) => const Icon(
-                      Icons.image_not_supported,
-                      color: Colors.white,
-                    ),
+                errorWidget: (context, url, error) => const Icon(
+                  Icons.image_not_supported,
+                  color: Colors.white,
+                ),
               )
             else
               const Icon(Icons.image_not_supported, color: Colors.white),
 
-            // --- Layer 2: The Gradient Overlay ---
-            // This makes the text readable over any image.
+            // ... (rest of the Stack is unchanged)
             Container(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
@@ -81,9 +94,6 @@ class PoiCard extends StatelessWidget {
                 ),
               ),
             ),
-
-            // --- Layer 3: The Text ---
-            // Positioned at the bottom of the card.
             Positioned(
               bottom: 0,
               left: 0,
