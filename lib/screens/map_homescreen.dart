@@ -946,11 +946,9 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _showCustomRouteSheet() async {
-    // Hide the discovery panel if it's open
-    // (You might need to add a method to your DiscoveryPanel to control this,
-    // or manage its visibility with a state variable here)
+// In lib/screens/map_screen.dart
 
+  void _showCustomRouteSheet() async {
     final result = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
       isScrollControlled: true,
@@ -961,41 +959,97 @@ class _MapScreenState extends State<MapScreen> {
       final startPoi = result['start']!;
       final endPoi = result['end']!;
 
-      final startCoords = startPoi['coordinates'] as GeoPoint;
-      final endCoords = endPoi['coordinates'] as GeoPoint;
+      LatLng? startLatLng;
+      LatLng? endLatLng;
+      Position? userPos;
 
-      final LatLng startLatLng = LatLng(
-        startCoords.latitude,
-        startCoords.longitude,
-      );
-      final LatLng endLatLng = LatLng(endCoords.latitude, endCoords.longitude);
+      // 1. Check if we need to get the user's location
+      bool needsLocation =
+          startPoi['id'] == 'MY_LOCATION' || endPoi['id'] == 'MY_LOCATION';
 
-      // Clear any previous navigation state
+      if (needsLocation) {
+        // 2. Get user's location (with all permission checks)
+        try {
+          bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+          if (!serviceEnabled && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Location services are disabled.')));
+            return;
+          }
+
+          LocationPermission permission = await Geolocator.checkPermission();
+          if (permission == LocationPermission.denied) {
+            permission = await Geolocator.requestPermission();
+          }
+          if (permission == LocationPermission.denied ||
+              permission == LocationPermission.deniedForever) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Location permission denied.')));
+            }
+            return;
+          }
+
+          userPos = await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.high,
+          );
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to get location: $e')));
+          }
+          return;
+        }
+      }
+
+      // 3. Determine Start LatLng
+      if (startPoi['id'] == 'MY_LOCATION' && userPos != null) {
+        startLatLng = LatLng(userPos.latitude, userPos.longitude);
+      } else {
+        final coords = startPoi['coordinates'] as GeoPoint;
+        startLatLng = LatLng(coords.latitude, coords.longitude);
+      }
+
+      // 4. Determine End LatLng
+      if (endPoi['id'] == 'MY_LOCATION' && userPos != null) {
+        endLatLng = LatLng(userPos.latitude, userPos.longitude);
+      } else {
+        final coords = endPoi['coordinates'] as GeoPoint;
+        endLatLng = LatLng(coords.latitude, coords.longitude);
+      }
+
+      // 5. We have our coordinates, now draw the route
       _endNavigation();
 
-      // --- START OF FIX ---
-      // 1. Capture the return value
-      final bool routeDrawn =
-          await _drawRoute(startLatLng, endLatLng, _currentTravelMode);
+      final bool routeDrawn = await _drawRoute(
+        startLatLng,
+        endLatLng,
+        _currentTravelMode,
+      );
 
-      // 2. If the route was NOT drawn (blocked or failed), stop here.
-      if (!routeDrawn) return;
-      // --- END OF FIX ---
+      if (!routeDrawn) return; // Stop if user canceled (e.g., closure warning)
 
-      // Step 2: Get the details for the route we just drew
       final details = await _getDirectionsDetails(
         startLatLng,
         endLatLng,
         _currentTravelMode,
       );
 
-      // Step 3: Show the navigation panel with the details
+      // --- ⭐️ THIS IS THE FIX FOR YOUR 2ND REQUEST ⭐️ ---
       if (details != null && mounted) {
         setState(() {
-          _isCustomRoutePreview = true; // 👈 SET THE FLAG TO TRUE HERE
+          // If start is "My Location", it's a "Get Directions" flow.
+          // Otherwise, it's a "Custom Route Preview" flow.
+          if (startPoi['id'] == 'MY_LOCATION') {
+            _isCustomRoutePreview = false; // This will show the "Start" button
+          } else {
+            _isCustomRoutePreview =
+                true; // This will show the "Clear Route" button
+          }
         });
         _startNavigation(details);
       }
+      // --- END OF FIX ---
     }
   }
 
@@ -1340,9 +1394,9 @@ class _MapScreenState extends State<MapScreen> {
       _listenToClosures();
     });
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    /*WidgetsBinding.instance.addPostFrameCallback((_) {
       _goToMyLocation();
-    });
+    });*/
   }
 
   // New function to fetch user data
@@ -1385,6 +1439,9 @@ class _MapScreenState extends State<MapScreen> {
               setState(() {
                 _tourismReminderShown = true;
               });
+            }
+            if (mounted) {
+              await _goToMyLocation();
             }
             // --- END OF REVISED LOGIC ---
           }

@@ -1,5 +1,6 @@
 // In lib/services/poi_search_delegate.dart
 
+import 'dart:math' as math; // 👈 ADD THIS IMPORT
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
@@ -11,7 +12,7 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
 
   POISearchDelegate({this.userLocation});
 
-  // --- 1. NEW: HELPER TO FETCH NEARBY POIS ---
+  // --- 1. HELPER TO FETCH NEARBY POIS (Unchanged) ---
   /// Fetches all POIs and returns a sorted list of those within 5km.
   Future<List<Poi>> _fetchNearbyPois() async {
     if (userLocation == null) return []; // No location, no nearby
@@ -40,26 +41,55 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     return nearbyPois;
   }
 
-  // --- 2. NEW: HELPER TO FETCH POPULAR POIS ---
-  /// Fetches POIs where 'recommended' is true.
-  Future<List<Poi>> _fetchPopularPois() async {
+  // --- 2. ⭐️ REPLACED HELPER: FETCH RANDOM POIS ⭐️ ---
+  /// Fetches a random selection of POIs.
+  Future<List<Poi>> _fetchRandomPois() async {
     try {
+      // Generate a random 20-char ID to start the query from
+      final randomId = _generateRandomId();
+
       final snapshot = await FirebaseFirestore.instance
           .collection('POIs')
-          .where('recommended', isEqualTo: true) // Assumes you have this field
-          .limit(10) // Get top 10
+          .where(FieldPath.documentId, isGreaterThanOrEqualTo: randomId)
+          .limit(10) // Get 10 documents starting from that random point
           .get();
+
+      // If we didn't get enough, try again by querying backwards
+      // This makes sure we always get results, even if randomId is near the end
+      if (snapshot.docs.length < 10) {
+        final snapshot2 = await FirebaseFirestore.instance
+            .collection('POIs')
+            .where(FieldPath.documentId, isLessThan: randomId)
+            .limit(10 - snapshot.docs.length)
+            .get();
+
+        // Combine the two lists
+        return [
+          ...snapshot.docs.map((doc) => Poi.fromFirestore(doc)),
+          ...snapshot2.docs.map((doc) => Poi.fromFirestore(doc)),
+        ];
+      }
 
       return snapshot.docs.map((doc) => Poi.fromFirestore(doc)).toList();
     } catch (e) {
-      print(
-          "Error fetching popular POIs (is 'recommended' field indexed?): $e");
+      print("Error fetching random POIs: $e");
       return []; // Return empty on error
     }
   }
 
-  // --- 3. NEW: HELPER TO BUILD SECTION HEADERS ---
+  // --- 3. ⭐️ NEW HELPER: RANDOM ID GENERATOR ⭐️ ---
+  /// Generates a 20-character random ID for Firestore queries.
+  String _generateRandomId() {
+    const chars =
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final rnd = math.Random();
+    return String.fromCharCodes(Iterable.generate(
+        20, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+  }
+
+  // --- 4. ⭐️ FIXED HELPER: BUILD SECTION HEADERS ⭐️ ---
   Widget _buildSectionHeader(String title, BuildContext context) {
+    // 👈 Added context
     return Padding(
       padding: const EdgeInsets.fromLTRB(16.0, 20.0, 16.0, 8.0),
       child: Text(
@@ -67,14 +97,14 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
         style: TextStyle(
           fontSize: 13,
           fontWeight: FontWeight.bold,
-          color: Theme.of(context).primaryColor,
+          color: Theme.of(context).primaryColor, // 👈 Now works
           letterSpacing: 0.5,
         ),
       ),
     );
   }
 
-  // --- 4. NEW: HELPER TO BUILD A SUGGESTION TILE (FOR NEARBY/POPULAR) ---
+  // --- 5. HELPER TO BUILD A SUGGESTION TILE (Unchanged) ---
   ListTile _buildSuggestionTile(Poi poi, BuildContext context) {
     String subtitle;
     if (poi.distance != null) {
@@ -82,7 +112,7 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
       final distanceKm = (poi.distance! / 1000).toStringAsFixed(1);
       subtitle = "${poi.type} • $distanceKm km away";
     } else {
-      // If it's a popular POI, just show type
+      // If it's a random POI, just show type
       subtitle = poi.type;
     }
 
@@ -96,7 +126,7 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     );
   }
 
-  // --- 5. NEW: HELPER TO BUILD A SEARCH RESULT TILE (WITH HIGHLIGHTING) ---
+  // --- 6. HELPER TO BUILD A SEARCH RESULT TILE (Unchanged) ---
   ListTile _buildSearchTile(Poi poi, BuildContext context) {
     return ListTile(
       leading: _getIconForType(poi.type),
@@ -108,7 +138,7 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     );
   }
 
-  // --- 6. UPDATED: buildSuggestions is now a router ---
+  // --- 7. UPDATED: buildSuggestions (Unchanged) ---
   @override
   Widget buildSuggestions(BuildContext context) {
     if (query.isEmpty) {
@@ -120,26 +150,25 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     }
   }
 
-  // --- 7. NEW: WIDGET TO BUILD THE GROUPS ---
+  // --- 8. ⭐️ UPDATED: WIDGET TO BUILD THE GROUPS ⭐️ ---
   Widget _buildGroupedSuggestions(BuildContext context) {
-    // If we have no location, just show Popular
+    // If we have no location, just show Random
     if (userLocation == null) {
       return FutureBuilder<List<Poi>>(
-        future: _fetchPopularPois(),
+        future: _fetchRandomPois(), // 👈 Call random
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return const Center(child: Text('No popular places found.'));
+            return const Center(child: Text('No places found.'));
           }
 
-          final popularPois = snapshot.data!;
+          final randomPois = snapshot.data!;
           return ListView(
             children: [
-              _buildSectionHeader(
-                  "Popular in Sagada", context), // 👈 PASS CONTEXT
-              ...popularPois.map((poi) => _buildSuggestionTile(poi, context)),
+              _buildSectionHeader("Random Suggestions", context), // 👈 Rename
+              ...randomPois.map((poi) => _buildSuggestionTile(poi, context)),
             ],
           );
         },
@@ -150,7 +179,7 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
     return FutureBuilder<List<List<Poi>>>(
       future: Future.wait([
         _fetchNearbyPois(),
-        _fetchPopularPois(),
+        _fetchRandomPois(), // 👈 Call random
       ]),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -161,34 +190,33 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
         }
 
         final nearbyPois = snapshot.data![0];
-        final popularPois = snapshot.data![1];
+        final randomPois = snapshot.data![1];
 
         // Build a single ListView with all sections
         return ListView(
           children: [
             // --- Nearby Section ---
-            _buildSectionHeader("Nearby", context), // 👈 PASS CONTEXT
+            _buildSectionHeader("Nearby", context), // 👈 Pass context
             if (nearbyPois.isEmpty)
               const ListTile(
                   title: Text('No nearby places found within 5km.',
                       style: TextStyle(color: Colors.grey))),
             ...nearbyPois.map((poi) => _buildSuggestionTile(poi, context)),
 
-            // --- Popular Section ---
-            _buildSectionHeader(
-                "Popular in Sagada", context), // 👈 PASS CONTEXT
-            if (popularPois.isEmpty)
+            // --- Random Section ---
+            _buildSectionHeader("Random Suggestions", context), // 👈 Rename
+            if (randomPois.isEmpty)
               const ListTile(
-                  title: Text('No recommended places found.',
+                  title: Text('No places found.',
                       style: TextStyle(color: Colors.grey))),
-            ...popularPois.map((poi) => _buildSuggestionTile(poi, context)),
+            ...randomPois.map((poi) => _buildSuggestionTile(poi, context)),
           ],
         );
       },
     );
   }
 
-  // --- 8. UPDATED: This is your old search logic, now in its own function ---
+  // --- 9. UPDATED: TEXT SEARCH RESULTS (Unchanged) ---
   Widget _buildTextSearchResults(BuildContext context) {
     return FutureBuilder<QuerySnapshot>(
       future: FirebaseFirestore.instance.collection('POIs').get(),
