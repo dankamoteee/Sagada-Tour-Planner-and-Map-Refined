@@ -7,29 +7,29 @@ class PoiCard extends StatelessWidget {
 
   const PoiCard({super.key, required this.poiData, required this.onTap});
 
-  // In lib/widgets/poi_card.dart
-
   @override
   Widget build(BuildContext context) {
-    // --- START OF FIX ---
+    // --- START OF NEW, ROBUST IMAGE LOGIC ---
 
-    // Safely check the type of 'images'
-    final imagesData = poiData['images'];
-    List<dynamic>? images;
-    if (imagesData is List) {
-      images = imagesData;
+    // 1. Try to get the new 'primaryImage'
+    final String? primaryImage = poiData['primaryImage'] as String?;
+
+    // 2. Try to get the 'images' list
+    final List<dynamic>? imagesList = poiData['images'] as List<dynamic>?;
+
+    // 3. Try to get the old 'imageUrl' (for backward compatibility)
+    final String? legacyImageUrl = poiData['imageUrl'] as String?;
+
+    // Find the best available image URL
+    String? displayImageUrl;
+    if (primaryImage != null && primaryImage.isNotEmpty) {
+      displayImageUrl = primaryImage;
+    } else if (imagesList != null && imagesList.isNotEmpty) {
+      displayImageUrl = imagesList[0] as String?;
+    } else if (legacyImageUrl != null && legacyImageUrl.isNotEmpty) {
+      displayImageUrl = legacyImageUrl;
     }
-
-    // Safely get the imageUrl
-    String? imageUrl;
-    if (images != null && images.isNotEmpty) {
-      imageUrl = images[0] as String?; // Cast here, as it's safer
-    } else {
-      // Fallback to 'imageUrl' if 'images' is not a list or is empty
-      imageUrl = poiData['imageUrl'] as String?;
-    }
-
-    // --- END OF FIX ---
+    // --- END OF NEW, ROBUST IMAGE LOGIC ---
 
     // Get the distance text, same as before.
     final distance = poiData['distance'] as double?;
@@ -46,7 +46,6 @@ class PoiCard extends StatelessWidget {
       onTap: onTap,
       child: Container(
         width: 160,
-        // ... (rest of the widget is unchanged)
         height: 140,
         clipBehavior: Clip
             .antiAlias, // This ensures the borderRadius is respected by children.
@@ -65,10 +64,10 @@ class PoiCard extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // --- REPLACE THE IMAGE WIDGET ---
-            if (imageUrl != null && imageUrl.isNotEmpty) // Added empty check
+            // --- UPDATED IMAGE WIDGET ---
+            if (displayImageUrl != null && displayImageUrl.isNotEmpty)
               CachedNetworkImage(
-                imageUrl: imageUrl,
+                imageUrl: displayImageUrl,
                 fit: BoxFit.cover,
                 // Show a loading spinner while the image downloads
                 placeholder: (context, url) => const Center(

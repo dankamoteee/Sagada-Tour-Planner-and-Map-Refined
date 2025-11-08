@@ -8,11 +8,24 @@ class Poi {
   final String description;
   final String type;
   final GeoPoint coordinates;
-  final List<String> images;
-  final String? imageUrl;
-  final String? status; // 👈 ADD THIS
-  final bool? guideRequired; // 👈 ADD THIS
-  double? distance; // 👈 ADD THIS FIELD
+
+  // New Image System (from Storage)
+  final String? primaryImage; // For cards/lists
+  final List<String> images; // For the gallery
+
+  // Reverted to simple fields
+  final String? openingHours;
+  final String? contactNumber;
+  final String? status; // e.g., "Open", "Closed"
+
+  // New Simplified Map
+  final Map<String, dynamic>? entranceFee; // Will hold 'adult', 'child'
+
+  // Original field
+  final bool? guideRequired;
+
+  // Local-only field
+  double? distance;
 
   Poi({
     required this.id,
@@ -21,60 +34,58 @@ class Poi {
     required this.type,
     required this.coordinates,
     required this.images,
-    this.imageUrl,
-    this.status, // 👈 ADD THIS
-    this.guideRequired, // 👈 ADD THIS
+    this.primaryImage,
+    this.openingHours,
+    this.contactNumber,
+    this.status,
+    this.entranceFee,
+    this.guideRequired,
     this.distance,
   });
 
   // Factory constructor to create a Poi instance from a Firestore document
-  // Factory constructor to create a Poi instance from a Firestore document
   factory Poi.fromFirestore(DocumentSnapshot doc) {
     Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
 
-    // --- START OF FIX ---
+    // --- Safe Coordinate Parsing ---
     dynamic coordsData = data['coordinates'];
     GeoPoint coordinates;
-
     if (coordsData is GeoPoint) {
-      // It's already a GeoPoint, just use it.
       coordinates = coordsData;
     } else if (coordsData is Map) {
-      // It's a Map, so extract lat/lng.
       coordinates = GeoPoint(
         coordsData['latitude'] ?? 0.0,
         coordsData['longitude'] ?? 0.0,
       );
     } else {
-      // It's null or some other type, use a default.
       coordinates = const GeoPoint(0, 0);
     }
-    // --- END OF FIX ---
 
-    // --- START OF 2ND FIX (for the 'images' field) ---
-    // Let's fix the 'images' field while we're here, just in case.
-    // This will prevent the same crash we fixed earlier.
+    // --- Safe List<String> Parsing for Images ---
     List<String> images = [];
     if (data['images'] is List) {
-      images = List<String>.from(data['images']);
+      images = List<String>.from(
+          (data['images'] as List).map((item) => item.toString()));
     }
-    // --- END OF 2ND FIX ---
 
     return Poi(
       id: doc.id,
       name: data['name'] ?? 'Unnamed',
       description: data['description'] ?? '',
       type: data['type'] ?? 'Unknown',
-      coordinates: coordinates, // Use the safe coordinates
-      images: images, // Use the safe images list
-      imageUrl: data['imageUrl'],
-      status:
-          data['status'], // 👈 ADD THIS (will be null if field doesn't exist)
-      guideRequired: data[
-          'guideRequired'], // 👈 ADD THIS (will be null if field doesn't exist)
+      coordinates: coordinates,
+      primaryImage: data['primaryImage'] as String?,
+      images: images,
+      openingHours: data['openingHours'] as String?, // Reverted to String
+      contactNumber: data['contactNumber'] as String?, // Reverted to String
+      status: data['status'] as String?, // Reverted to String
+      entranceFee:
+          data['entranceFee'] as Map<String, dynamic>?, // Simplified Map
+      guideRequired: data['guideRequired'] as bool?,
     );
   }
-  // A method to convert our Poi object back to a Map, which is useful
+
+  // A method to convert our Poi object back to a Map
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -82,12 +93,16 @@ class Poi {
       'description': description,
       'type': type,
       'coordinates': coordinates,
+      'primaryImage': primaryImage,
       'images': images,
-      'imageUrl': imageUrl,
+      'openingHours': openingHours,
+      'contactNumber': contactNumber,
+      'status': status,
+      'entranceFee': entranceFee,
+      'guideRequired': guideRequired,
+      // These are not part of the DB structure
       'lat': coordinates.latitude,
       'lng': coordinates.longitude,
-      'status': status, // 👈 ADD THIS
-      'guideRequired': guideRequired, // 👈 ADD THIS
     };
   }
 }

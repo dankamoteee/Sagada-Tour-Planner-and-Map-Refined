@@ -1,8 +1,11 @@
+// lib/screens/itinerary_detail_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'event_editor_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart'; // ⭐️ ADD THIS IMPORT
 
 class ItineraryDetailScreen extends StatefulWidget {
   final String itineraryId;
@@ -19,11 +22,13 @@ class ItineraryDetailScreen extends StatefulWidget {
 }
 
 class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
-  // --- FUNCTION TO DELETE AN EVENT ---
+  // --- Your _deleteEvent, _onReorder, and _deleteEntireItinerary functions
+  // --- are all perfect. No changes needed to them. ---
+
   Future<void> _deleteEvent(String eventId) async {
+    // ... (your existing code)
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -34,25 +39,19 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
         .delete();
   }
 
-  // --- FUNCTION TO REORDER EVENTS ---
   Future<void> _onReorder(
     List<DocumentSnapshot> events,
     int oldIndex,
     int newIndex,
   ) async {
+    // ... (your existing code)
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
-    // Adjust index for items moved down the list
     if (oldIndex < newIndex) {
       newIndex -= 1;
     }
-
-    // Move the item in the list
     final item = events.removeAt(oldIndex);
     events.insert(newIndex, item);
-
-    // Create a batch write to update all 'order' fields in Firestore at once
     final batch = FirebaseFirestore.instance.batch();
     for (int i = 0; i < events.length; i++) {
       final docRef = events[i].reference;
@@ -61,36 +60,33 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
     await batch.commit();
   }
 
-  // --- ADD THIS NEW FUNCTION ---
   Future<void> _deleteEntireItinerary() async {
+    // ... (your existing code)
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // 1. Show a confirmation dialog with a strong warning
     final bool? didConfirm = await showDialog<bool>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Delete Itinerary?'),
-            content: Text(
-              'Are you sure you want to permanently delete "${widget.itineraryName}" and all of its events? This action cannot be undone.',
-            ),
-            actions: [
-              TextButton(
-                child: const Text('Cancel'),
-                onPressed: () => Navigator.of(context).pop(false),
-              ),
-              TextButton(
-                style: TextButton.styleFrom(foregroundColor: Colors.red),
-                child: const Text('Delete Permanently'),
-                onPressed: () => Navigator.of(context).pop(true),
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Itinerary?'),
+        content: Text(
+          'Are you sure you want to permanently delete "${widget.itineraryName}" and all of its events? This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            child: const Text('Cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
           ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete Permanently'),
+            onPressed: () => Navigator.of(context).pop(true),
+          ),
+        ],
+      ),
     );
 
     if (didConfirm == true) {
-      // Show a loading indicator while deleting
       showDialog(
         context: context,
         builder: (context) => const Center(child: CircularProgressIndicator()),
@@ -98,28 +94,20 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
       );
 
       try {
-        // 2. Use a WriteBatch to delete all documents at once
         final batch = FirebaseFirestore.instance.batch();
-
         final itineraryRef = FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
             .collection('itineraries')
             .doc(widget.itineraryId);
 
-        // Get all events in the subcollection to delete them
         final eventsSnapshot = await itineraryRef.collection('events').get();
         for (final doc in eventsSnapshot.docs) {
           batch.delete(doc.reference);
         }
-
-        // Delete the main itinerary document itself
         batch.delete(itineraryRef);
-
-        // 3. Commit all the deletions
         await batch.commit();
 
-        // 4. Pop both the loading dialog and the detail screen
         if (mounted) {
           Navigator.of(context).pop(); // Dismiss loading dialog
           Navigator.pop(
@@ -138,6 +126,210 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
     }
   }
 
+  // --- ⭐️ NEW HELPER WIDGET ⭐️ ---
+  /// Builds the new visual card for each event
+  Widget _buildEventItem(DocumentSnapshot eventDoc) {
+    final event = eventDoc.data() as Map<String, dynamic>;
+    final eventTime = (event['eventTime'] as Timestamp).toDate();
+    final notes = event['notes'] as String?;
+    final poiId = event['destinationPoiId'] as String?;
+
+    // --- Case 1: This is a "Custom Event" (no POI linked) ---
+    if (poiId == null) {
+      return Dismissible(
+        key: ValueKey(eventDoc.id),
+        direction: DismissDirection.endToStart,
+        onDismissed: (_) => _deleteEvent(eventDoc.id),
+        background: _buildDeleteBackground(),
+        child: Card(
+          margin: const EdgeInsets.symmetric(vertical: 6.0),
+          child: ListTile(
+            leading: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  DateFormat.jm().format(eventTime),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).primaryColor,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+            title: Text(
+              event['destinationName'] ?? 'Custom Event',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: notes != null && notes.isNotEmpty
+                ? Text(
+                    notes,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                : null,
+            trailing: const Icon(Icons.drag_handle, color: Colors.grey),
+            onTap: () => _navigateToEditor(eventDoc: eventDoc),
+          ),
+        ),
+      );
+    }
+
+    // --- Case 2: This is a POI Event (fetch POI data) ---
+    return Dismissible(
+      key: ValueKey(eventDoc.id),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => _deleteEvent(eventDoc.id),
+      background: _buildDeleteBackground(),
+      child: FutureBuilder<DocumentSnapshot>(
+        future: FirebaseFirestore.instance.collection('POIs').doc(poiId).get(),
+        builder: (context, poiSnapshot) {
+          // --- Build the Card with POI data ---
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 6.0),
+            clipBehavior: Clip.antiAlias,
+            child: ListTile(
+              contentPadding: const EdgeInsets.all(10),
+              // --- 1. POI IMAGE (Leading) ---
+              leading: _buildPoiImage(poiSnapshot),
+
+              // --- 2. POI NAME (Title) ---
+              title: Text(
+                poiSnapshot.hasData
+                    ? (poiSnapshot.data!['name'] ?? 'Loading...')
+                    : 'Loading...',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+
+              // --- 3. TIME AND NOTES (Subtitle) ---
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    DateFormat.jm().format(eventTime),
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                  ),
+                  if (notes != null && notes.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      notes,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+              trailing: const Icon(Icons.drag_handle, color: Colors.grey),
+              onTap: () => _navigateToEditor(
+                eventDoc: eventDoc,
+                poiData: poiSnapshot.hasData
+                    ? poiSnapshot.data!.data() as Map<String, dynamic>
+                    : null,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // --- ⭐️ NEW HELPER FOR THE IMAGE ⭐️ ---
+  Widget _buildPoiImage(AsyncSnapshot<DocumentSnapshot> poiSnapshot) {
+    if (!poiSnapshot.hasData || poiSnapshot.data?.data() == null) {
+      return Container(
+        width: 60,
+        height: 60,
+        color: Colors.grey[200],
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final poiData = poiSnapshot.data!.data() as Map<String, dynamic>;
+
+    // Use the same robust logic from poi_card.dart
+    final String? primaryImage = poiData['primaryImage'] as String?;
+    final List<dynamic>? imagesList = poiData['images'] as List<dynamic>?;
+    final String? legacyImageUrl = poiData['imageUrl'] as String?;
+
+    String? displayImageUrl;
+    if (primaryImage != null && primaryImage.isNotEmpty) {
+      displayImageUrl = primaryImage;
+    } else if (imagesList != null && imagesList.isNotEmpty) {
+      displayImageUrl = imagesList[0] as String?;
+    } else if (legacyImageUrl != null && legacyImageUrl.isNotEmpty) {
+      displayImageUrl = legacyImageUrl;
+    }
+
+    return Container(
+      width: 60,
+      height: 60,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8.0),
+        child: (displayImageUrl != null && displayImageUrl.isNotEmpty)
+            ? CachedNetworkImage(
+                imageUrl: displayImageUrl,
+                fit: BoxFit.cover,
+                placeholder: (context, url) =>
+                    Container(color: Colors.grey[200]),
+                errorWidget: (context, url, error) => Container(
+                    color: Colors.grey[200],
+                    child: const Icon(Icons.broken_image, color: Colors.grey)),
+              )
+            : Container(
+                color: Colors.grey[200],
+                child: const Icon(Icons.location_on, color: Colors.grey),
+              ),
+      ),
+    );
+  }
+
+  // --- ⭐️ NEW HELPER FOR NAVIGATION ⭐️ ---
+  /// Navigates to the editor, passing both event and POI data
+  Future<void> _navigateToEditor({
+    DocumentSnapshot? eventDoc,
+    Map<String, dynamic>? poiData,
+  }) async {
+    final result = await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => EventEditorScreen(
+          itineraryId: widget.itineraryId,
+          eventDoc: eventDoc,
+          // We pass initial POI data to pre-fill the editor
+          initialPoiData: poiData,
+        ),
+      ),
+    );
+
+    if (result is String && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result),
+          backgroundColor:
+              result.contains('deleted') ? Colors.red : Colors.green,
+        ),
+      );
+    }
+  }
+
+  // --- ⭐️ NEW HELPER FOR DISMISSIBLE ⭐️ ---
+  Widget _buildDeleteBackground() {
+    return Container(
+      color: Colors.red.shade400,
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 20.0),
+      margin: const EdgeInsets.symmetric(vertical: 6.0),
+      child: const Icon(
+        Icons.delete_outline,
+        color: Colors.white,
+      ),
+    );
+  }
+
+  // --- ⭐️ YOUR MAIN BUILD METHOD, NOW CLEANER ⭐️ ---
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -148,23 +340,19 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_forever_outlined),
-            // Make sure onPressed calls your new function
             onPressed: _deleteEntireItinerary,
           ),
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream:
-            FirebaseFirestore.instance
-                .collection('users')
-                .doc(user!.uid)
-                .collection('itineraries')
-                .doc(widget.itineraryId)
-                .collection('events')
-                .orderBy(
-                  'eventTime',
-                ) // Crucial: Sort by time to group correctly
-                .snapshots(),
+        stream: FirebaseFirestore.instance
+            .collection('users')
+            .doc(user!.uid)
+            .collection('itineraries')
+            .doc(widget.itineraryId)
+            .collection('events')
+            .orderBy('eventTime')
+            .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -175,12 +363,9 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
             );
           }
 
-          // Group events by day
-          // --- NEW GROUPING LOGIC ---
           final Map<DateTime, List<DocumentSnapshot>> eventsByDate = {};
           for (var doc in snapshot.data!.docs) {
             final eventTime = (doc['eventTime'] as Timestamp).toDate();
-            // Normalize the date to midnight to use it as a key
             final dateKey = DateTime(
               eventTime.year,
               eventTime.month,
@@ -200,19 +385,17 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
             itemBuilder: (context, index) {
               final date = sortedDates[index];
               final events = eventsByDate[date]!;
-              final dayNumber = index + 1; // "Day 1", "Day 2", etc.
+              final dayNumber = index + 1;
 
               return Padding(
                 padding: const EdgeInsets.all(8.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // --- START OF CHANGES ---
                     // Day Header Row
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // Header Text
                         Padding(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 8.0,
@@ -226,24 +409,20 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
                             ),
                           ),
                         ),
-                        // Show on Map Button
+                        // "Show on Map" Button
                         TextButton.icon(
                           icon: const Icon(Icons.map_outlined),
                           label: const Text('Show on Map'),
-                          // --- START OF FIX ---
                           onPressed: () async {
-                            // Show a loading indicator since this involves database reads
                             showDialog(
                               context: context,
                               barrierDismissible: false,
-                              builder:
-                                  (context) => const Center(
-                                    child: CircularProgressIndicator(),
-                                  ),
+                              builder: (context) => const Center(
+                                child: CircularProgressIndicator(),
+                              ),
                             );
 
                             final List<GeoPoint> coordinates = [];
-                            // 1. Loop through each event for the day
                             for (final eventDoc in events) {
                               final event =
                                   eventDoc.data() as Map<String, dynamic>;
@@ -251,17 +430,27 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
                                   event['destinationPoiId'] as String?;
 
                               if (poiId != null) {
-                                // 2. Use the ID to fetch the full POI document
-                                final poiDoc =
-                                    await FirebaseFirestore.instance
-                                        .collection('POIs')
-                                        .doc(poiId)
-                                        .get();
+                                final poiDoc = await FirebaseFirestore.instance
+                                    .collection('POIs')
+                                    .doc(poiId)
+                                    .get();
                                 if (poiDoc.exists) {
-                                  // 3. Extract the coordinates and add them to our list
                                   final poiData = poiDoc.data()!;
-                                  final coords =
-                                      poiData['coordinates'] as GeoPoint?;
+
+                                  // This is the safe parsing logic
+                                  final dynamic coordsData =
+                                      poiData['coordinates'];
+                                  GeoPoint? coords;
+
+                                  if (coordsData is GeoPoint) {
+                                    coords = coordsData;
+                                  } else if (coordsData is Map) {
+                                    coords = GeoPoint(
+                                      coordsData['latitude'] ?? 0.0,
+                                      coordsData['longitude'] ?? 0.0,
+                                    );
+                                  }
+
                                   if (coords != null) {
                                     coordinates.add(coords);
                                   }
@@ -269,15 +458,11 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
                               }
                             }
 
-                            // Dismiss the loading indicator
                             if (context.mounted) Navigator.pop(context);
-
-                            // 4. Pop the screen and return the list of coordinates
                             if (context.mounted) {
                               Navigator.pop(context, coordinates);
                             }
                           },
-                          // --- END OF FIX ---
                         ),
                       ],
                     ),
@@ -286,68 +471,14 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
                     ReorderableListView(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      onReorder:
-                          (oldIndex, newIndex) =>
-                              _onReorder(events, oldIndex, newIndex),
-                      children:
-                          events.map((eventDoc) {
-                            final event =
-                                eventDoc.data() as Map<String, dynamic>;
-                            final eventTime =
-                                (event['eventTime'] as Timestamp).toDate();
-
-                            return Dismissible(
-                              key: ValueKey(eventDoc.id),
-                              direction: DismissDirection.endToStart,
-                              onDismissed: (_) => _deleteEvent(eventDoc.id),
-                              background: Container(
-                                color: Colors.red.shade400,
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.only(right: 20.0),
-                                child: const Icon(
-                                  Icons.delete_outline,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              child: ListTile(
-                                leading: Text(
-                                  DateFormat.jm().format(eventTime),
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Theme.of(context).primaryColor,
-                                  ),
-                                ),
-                                onTap: () async {
-                                  // 1. Await the result from the editor screen
-                                  final result = await Navigator.of(
-                                    context,
-                                  ).push(
-                                    MaterialPageRoute(
-                                      builder:
-                                          (context) => EventEditorScreen(
-                                            itineraryId: widget.itineraryId,
-                                            eventDoc:
-                                                eventDoc, // Pass the event data for editing
-                                          ),
-                                    ),
-                                  );
-
-                                  // 2. If we get a message back, show it in a SnackBar
-                                  if (result is String && mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(result),
-                                        backgroundColor:
-                                            result.contains('deleted')
-                                                ? Colors.red
-                                                : Colors.green,
-                                      ),
-                                    );
-                                  }
-                                },
-                              ),
-                            );
-                          }).toList(),
+                      onReorder: (oldIndex, newIndex) =>
+                          _onReorder(events, oldIndex, newIndex),
+                      // --- HERE IS THE BIG CHANGE ---
+                      // We map each eventDoc to our new helper widget
+                      children: events
+                          .map((eventDoc) => _buildEventItem(eventDoc))
+                          .toList(),
+                      // --- END OF CHANGE ---
                     ),
                   ],
                 ),
@@ -358,15 +489,8 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
-          // --- UPDATE THIS ---
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder:
-                  (context) => EventEditorScreen(
-                    itineraryId: widget.itineraryId, // Pass the itinerary ID
-                  ),
-            ),
-          );
+          // Use the new navigation helper
+          _navigateToEditor();
         },
         child: const Icon(Icons.add),
       ),

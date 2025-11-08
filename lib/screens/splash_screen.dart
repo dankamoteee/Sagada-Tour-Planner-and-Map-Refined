@@ -42,11 +42,10 @@ class _SplashScreenState extends State<SplashScreen> {
     } else {
       // --- 2. LOGGED IN ---
       // Now we MUST check if they are verified in Firestore
-      final userDoc =
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .get();
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
 
       if (!mounted) return;
 
@@ -71,8 +70,8 @@ class _SplashScreenState extends State<SplashScreen> {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder:
-                (_) => VerificationChoiceScreen(email: email, phone: phone),
+            builder: (_) =>
+                VerificationChoiceScreen(email: email, phone: phone),
           ),
         );
       } else {

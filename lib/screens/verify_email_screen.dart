@@ -1,3 +1,5 @@
+// lib/screens/verify_email_screen.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -22,18 +24,13 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
   @override
   void initState() {
     super.initState();
-
-    // 1. Start with the Resend button DISABLED
     canResendEmail = false;
-
-    // 2. Enable it after a 10-second cooldown
     Future.delayed(const Duration(seconds: 10), () {
       if (mounted) {
         setState(() => canResendEmail = true);
       }
     });
 
-    // 3. Start checking for verification every 3 seconds
     timer = Timer.periodic(
       const Duration(seconds: 3),
       (_) => _checkEmailVerified(),
@@ -42,22 +39,18 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
 
   @override
   void dispose() {
-    timer?.cancel(); // Stop the timer when the screen is closed!
+    timer?.cancel();
     super.dispose();
   }
 
   Future<void> _sendVerificationEmail() async {
-    // Store context-sensitive objects
     final scaffoldMessenger = ScaffoldMessenger.of(context);
-
     try {
       setState(() => canResendEmail = false);
-
       final user = FirebaseAuth.instance.currentUser;
       await user?.sendEmailVerification();
 
       if (!mounted) return;
-
       scaffoldMessenger.showSnackBar(
         const SnackBar(
           content: Text("Verification email sent."),
@@ -65,7 +58,6 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
         ),
       );
 
-      // Cooldown before allowing resend
       await Future.delayed(const Duration(seconds: 10));
       if (mounted) setState(() => canResendEmail = true);
     } catch (e) {
@@ -82,36 +74,38 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
   }
 
   Future<void> _checkEmailVerified() async {
-    // Store the navigator before the await
     final navigator = Navigator.of(context);
     final user = FirebaseAuth.instance.currentUser;
 
-    // We must reload the user to get the latest emailVerified status
     await user?.reload();
 
     if (user != null && user.emailVerified) {
       setState(() => isEmailVerified = true);
       timer?.cancel(); // Stop the timer
 
-      // Update their status in your database
       await FirebaseFirestore.instance.collection('users').doc(user.uid).update(
         {'isVerified': true},
       );
 
-      // Sign out *after* they are verified
-      await FirebaseAuth.instance.signOut();
+      // --- ⭐️ THIS IS THE FIX ⭐️ ---
+
+      // 1. DO NOT SIGN OUT. This was the original bug.
+      // await FirebaseAuth.instance.signOut(); // <-- THIS LINE REMAINS DELETED
 
       if (!mounted) return;
 
-      // Move to success screen
+      // 2. Go to the EmailVerifiedScreen (your success screen)
+      //    This is what you wanted.
       navigator.pushReplacement(
         MaterialPageRoute(builder: (context) => const EmailVerifiedScreen()),
       );
+      // --- ⭐️ END OF FIX ⭐️ ---
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // No changes needed in the build method.
     return Scaffold(
       appBar: AppBar(
         title: const Text('Verify Your Email'),

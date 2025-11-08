@@ -1,7 +1,12 @@
+// lib/screens/terms_screen.dart
+
 import 'package:flutter/material.dart';
 import 'gradient_background.dart';
 import 'read_terms_screen.dart.dart';
-import 'map_homescreen.dart';
+// 1. Remove the MapScreen import
+// import 'map_homescreen.dart';
+// 2. Add the new screen import
+import 'add_profile_picture_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class TermsAgreementScreen extends StatefulWidget {
@@ -26,17 +31,22 @@ class _TermsAgreementScreenState extends State<TermsAgreementScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('accepted_terms', true);
 
+      // --- 3. THIS IS THE CHANGE ---
+      // Navigate to the AddProfilePictureScreen instead of the MapScreen
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const MapScreen()),
+        MaterialPageRoute(
+          builder: (context) => const AddProfilePictureScreen(),
+        ),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // ... (Your build method is 100% correct, no changes needed here) ...
     return Scaffold(
-      backgroundColor: Colors.white, // Match Figma background
+      backgroundColor: Colors.white,
       body: GradientBackground(
         child: Center(
           child: Padding(

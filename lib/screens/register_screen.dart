@@ -55,11 +55,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     try {
       // Step 1: Create user in Firebase Auth
-      UserCredential userCredential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
-            email: _emailController.text.trim(),
-            password: _passwordController.text.trim(),
-          );
+      UserCredential userCredential =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
 
       User? user = userCredential.user;
 
@@ -83,12 +83,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
         // We pass the email and phone so the next screen can display them
         navigator.pushReplacement(
           MaterialPageRoute(
-            builder:
-                (context) => VerificationChoiceScreen(
-                  email: _emailController.text.trim(),
-                  // <-- 5. Use the new _completePhoneNumber variable
-                  phone: _completePhoneNumber,
-                ),
+            builder: (context) => VerificationChoiceScreen(
+              email: _emailController.text.trim(),
+              // <-- 5. Use the new _completePhoneNumber variable
+              phone: _completePhoneNumber,
+            ),
           ),
         );
       }
@@ -159,17 +158,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       TextFormField(
                         controller: _fullNameController,
                         decoration: _inputDecoration('Full Name'),
-                        validator:
-                            (value) =>
-                                value!.isEmpty ? 'Enter your full name' : null,
+                        validator: (value) =>
+                            value!.isEmpty ? 'Enter your full name' : null,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
                         controller: _usernameController,
                         decoration: _inputDecoration('Username'),
-                        validator:
-                            (value) =>
-                                value!.isEmpty ? 'Enter a username' : null,
+                        validator: (value) =>
+                            value!.isEmpty ? 'Enter a username' : null,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
@@ -303,12 +300,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ),
                           minimumSize: const Size.fromHeight(45),
                         ),
-                        child:
-                            _isLoading
-                                ? const CircularProgressIndicator(
-                                  color: Colors.white,
-                                )
-                                : const Text('Register'),
+                        child: _isLoading
+                            ? const CircularProgressIndicator(
+                                color: Colors.white,
+                              )
+                            : const Text('Register'),
                       ),
                       const SizedBox(height: 30),
                       Row(

@@ -4,8 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart'; // <-- IMPORT FIRESTORE
 import 'facebook_login_screen.dart';
 import 'forgot_password.dart';
 import 'gradient_background.dart';
+import 'map_homescreen.dart';
 import 'register_screen.dart';
 import 'terms_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 // We no longer go to VerifyEmailScreen from here, we go to the choice screen
 import 'verification_choice_screen.dart'; // <-- IMPORT NEW SCREEN
 
@@ -60,11 +62,10 @@ class _LoginScreenState extends State<LoginScreen> {
       if (user != null) {
         // --- THIS IS THE NEW LOGIC ---
         // 1. Get the user's document from Firestore
-        final userDoc =
-            await FirebaseFirestore.instance
-                .collection('users')
-                .doc(user.uid)
-                .get();
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
 
         if (!mounted) return;
 
@@ -73,20 +74,14 @@ class _LoginScreenState extends State<LoginScreen> {
             userDoc.exists && (userDoc.data()?['isVerified'] ?? false);
 
         if (!isVerified) {
-          // 3. If NOT verified, sign out and send to verification choice
-
-          if (!mounted) return;
-
-          // Get phone from doc to pass to choice screen
+          // 3. If NOT verified, send to verification choice
           final phone = userDoc.data()?['phone'] ?? '';
-
           navigator.pushReplacement(
             MaterialPageRoute(
-              builder:
-                  (context) => VerificationChoiceScreen(
-                    email: user.email!,
-                    phone: phone,
-                  ),
+              builder: (context) => VerificationChoiceScreen(
+                email: user.email!,
+                phone: phone,
+              ),
             ),
           );
 
@@ -98,13 +93,31 @@ class _LoginScreenState extends State<LoginScreen> {
           );
           return; // Stop execution
         }
-        // --- END OF NEW LOGIC ---
-      }
 
-      // If user is not null AND they are verified, proceed to Terms
-      navigator.pushReplacement(
-        MaterialPageRoute(builder: (context) => TermsAgreementScreen()),
-      );
+        // --- ⭐️ THIS IS THE FIX ⭐️ ---
+        // 4. If user IS verified, check if they have accepted terms
+        final prefs = await SharedPreferences.getInstance();
+        final acceptedTerms = prefs.getBool('accepted_terms') ?? false;
+
+        if (acceptedTerms) {
+          // 5. VERIFIED + ACCEPTED TERMS = GO TO MAP
+          // This skips the splash, terms, and pfp screens
+          navigator.pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => const MapScreen()),
+            (route) => false, // This clears all screens behind it
+          );
+        } else {
+          // 6. VERIFIED + NOT ACCEPTED TERMS = GO TO TERMS
+          // This is for users who verified but quit before terms/pfp
+          navigator.pushReplacement(
+            MaterialPageRoute(
+                builder: (context) => const TermsAgreementScreen()),
+          );
+        }
+        // --- ⭐️ END OF FIX ⭐️ ---
+
+        return; // We're done, exit the function
+      }
     } on FirebaseAuthException catch (e) {
       String message;
       switch (e.code) {
@@ -230,8 +243,8 @@ class _LoginScreenState extends State<LoginScreen> {
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder:
-                                      (context) => const ForgotPasswordScreen(),
+                                  builder: (context) =>
+                                      const ForgotPasswordScreen(),
                                 ),
                               );
                             },
@@ -262,12 +275,11 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                             minimumSize: const Size.fromHeight(45),
                           ),
-                          child:
-                              _isLoading
-                                  ? const CircularProgressIndicator(
-                                    color: Colors.white,
-                                  )
-                                  : const Text('Login'),
+                          child: _isLoading
+                              ? const CircularProgressIndicator(
+                                  color: Colors.white,
+                                )
+                              : const Text('Login'),
                         ),
                         const SizedBox(height: 30),
                         Row(
@@ -295,8 +307,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder:
-                                    (context) => const FacebookLoadingScreen(),
+                                builder: (context) =>
+                                    const FacebookLoadingScreen(),
                               ),
                             );
                           },
@@ -357,8 +369,8 @@ class _LoginScreenState extends State<LoginScreen> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder:
-                                        (context) => const RegisterScreen(),
+                                    builder: (context) =>
+                                        const RegisterScreen(),
                                   ),
                                 );
                               },
