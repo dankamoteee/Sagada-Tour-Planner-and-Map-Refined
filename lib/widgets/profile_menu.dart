@@ -5,7 +5,6 @@ import '../screens/recently_viewed_screen.dart';
 import '../screens/hotline_screen.dart';
 import '../screens/tour_guides_screen.dart';
 import '../screens/itineraries_list_screen.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 class ProfileMenu extends StatelessWidget {
@@ -14,7 +13,7 @@ class ProfileMenu extends StatelessWidget {
 
   // 2. Update the constructor to accept this data
   const ProfileMenu({super.key, this.userData, required this.onDrawItinerary});
-  final Function(List<GeoPoint>) onDrawItinerary; // Accept the function
+  final Function(Map<String, dynamic>) onDrawItinerary;
 
   @override
   Widget build(BuildContext context) {
@@ -59,11 +58,10 @@ class ProfileMenu extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder:
-                          (context) => ProfileScreen(
-                            userId: userId,
-                            userData: userData!, // <-- PASS THE DATA HERE
-                          ),
+                      builder: (context) => ProfileScreen(
+                        userId: userId,
+                        userData: userData!, // <-- PASS THE DATA HERE
+                      ),
                     ),
                   );
                 }
@@ -83,7 +81,7 @@ class ProfileMenu extends StatelessWidget {
                   );
 
                   // Handle the returned result
-                  if (result is List<GeoPoint>) {
+                  if (result is Map<String, dynamic>) {
                     onDrawItinerary(result); // Call your callback function
                   }
                 },
@@ -143,35 +141,31 @@ class ProfileMenu extends StatelessWidget {
             child: CircleAvatar(
               radius: 60,
               // 1. Background color is now conditional
-              backgroundColor:
-                  (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
-                      ? Colors
-                          .white // White border for the image
-                      : const Color(0xFF3A6A55), // Theme color for the initial
-              backgroundImage:
-                  (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
-                      ? CachedNetworkImageProvider(
-                        userPhotoUrl,
-                      ) // <-- Changed to this
-                      : null,
+              backgroundColor: (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
+                  ? Colors.white // White border for the image
+                  : const Color(0xFF3A6A55), // Theme color for the initial
+              backgroundImage: (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
+                  ? CachedNetworkImageProvider(
+                      userPhotoUrl,
+                    ) // <-- Changed to this
+                  : null,
               // 2. Child logic now checks for the user's name
-              child:
-                  (userPhotoUrl == null || userPhotoUrl.isEmpty)
-                      ? (userName.isNotEmpty && userName != 'Guest')
-                          ? Text(
-                            userName[0].toUpperCase(),
-                            style: const TextStyle(
-                              fontSize: 60,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          )
-                          : const Icon(
-                            Icons.person,
-                            size: 60,
-                            color: Colors.grey,
-                          )
-                      : null,
+              child: (userPhotoUrl == null || userPhotoUrl.isEmpty)
+                  ? (userName.isNotEmpty && userName != 'Guest')
+                      ? Text(
+                          userName[0].toUpperCase(),
+                          style: const TextStyle(
+                            fontSize: 60,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.person,
+                          size: 60,
+                          color: Colors.grey,
+                        )
+                  : null,
             ),
           ),
         ),

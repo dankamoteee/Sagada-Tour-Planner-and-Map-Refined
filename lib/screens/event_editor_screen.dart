@@ -6,12 +6,14 @@ import '../services/poi_search_delegate.dart'; // Ensure this path is correct
 
 class EventEditorScreen extends StatefulWidget {
   final String itineraryId;
+  final String itineraryName;
   final DocumentSnapshot? eventDoc; // Pass the event document if editing
   final Map<String, dynamic>? initialPoiData;
 
   const EventEditorScreen({
     super.key,
     required this.itineraryId,
+    required this.itineraryName,
     this.eventDoc,
     this.initialPoiData,
   });
@@ -24,12 +26,9 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
   final _formKey = GlobalKey<FormState>();
   bool get _isEditing => widget.eventDoc != null;
 
-  // Form controllers and state variables
   final TextEditingController _notesController = TextEditingController();
   DateTime? _selectedDateTime;
   Map<String, dynamic>? _selectedDestination;
-  Map<String, dynamic>? _selectedStartPoint;
-  bool _includeStartPoint = false;
   bool _isLoading = false;
 
   @override
@@ -40,19 +39,12 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
       final data = widget.eventDoc!.data() as Map<String, dynamic>;
       _notesController.text = data['notes'] ?? '';
       _selectedDateTime = (data['eventTime'] as Timestamp?)?.toDate();
-      _includeStartPoint = data['hasStartDestination'] ?? false;
 
       // Store POI data for display
       _selectedDestination = {
         'id': data['destinationPoiId'],
         'name': data['destinationPoiName'],
       };
-      if (_includeStartPoint) {
-        _selectedStartPoint = {
-          'id': data['startPoiId'],
-          'name': data['startPoiName'],
-        };
-      }
     } else if (widget.initialPoiData != null) {
       // --- THIS IS THE NEW LOGIC FOR "ADD TO PLAN" ---
       // Pre-fill the destination with the data passed from the POI sheet
@@ -67,24 +59,18 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     }
   }
 
-  // --- UI HELPER: To select a POI using search ---
-  Future<void> _selectPoi(bool isDestination) async {
+  Future<void> _selectPoi() async {
     final result = await showSearch<Map<String, dynamic>?>(
       context: context,
       delegate: POISearchDelegate(),
     );
     if (result != null) {
       setState(() {
-        if (isDestination) {
-          _selectedDestination = result;
-        } else {
-          _selectedStartPoint = result;
-        }
+        _selectedDestination = result;
       });
     }
   }
 
-  // --- UI HELPER: To show date and time pickers ---
   Future<void> _selectDateTime() async {
     final DateTime? date = await showDatePicker(
       context: context,
@@ -111,11 +97,7 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     }
   }
 
-  // --- FIRESTORE LOGIC: To save or update the event ---
-  // In event_editor_screen.dart -> inside _EventEditorScreenState
-
-  // In lib/screens/event_editor_screen.dart -> inside _EventEditorScreenState
-
+  // --- ⭐️ MODIFIED _saveEvent FUNCTION ⭐️ ---
   Future<void> _saveEvent() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedDestination == null) {
@@ -124,37 +106,27 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
       );
       return;
     }
+    // ⭐️ Use a default time if none is selected
+    _selectedDateTime ??= DateTime.now();
 
     setState(() => _isLoading = true);
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // --- START OF SIMPLIFIED LOGIC ---
-
-    // 1. Create the event data map with default values.
+    // Create the event data map
     final Map<String, dynamic> eventData = {
-      'eventTime':
-          _selectedDateTime != null
-              ? Timestamp.fromDate(_selectedDateTime!)
-              : Timestamp.now(),
+      'eventTime': Timestamp.fromDate(
+          _selectedDateTime!), // Now guaranteed to be non-null
       'destinationPoiId': _selectedDestination!['id'],
       'destinationPoiName': _selectedDestination!['name'],
-      'hasStartDestination': _includeStartPoint,
-      'startPoiId': null,
-      'startPoiName': null,
       'notes': _notesController.text,
       'userId': user.uid,
+      // ⭐️ --- ADD THESE TWO LINES --- ⭐️
+      'itineraryId': widget.itineraryId,
+      'itineraryName': widget.itineraryName,
+      // ⭐️ --- END OF ADDITION --- ⭐️
     };
-
-    // 2. Use a simple 'if' statement to add the start point data.
-    // This is clearer and avoids any compiler confusion.
-    if (_includeStartPoint && _selectedStartPoint != null) {
-      eventData['startPoiId'] = _selectedStartPoint!['id'];
-      eventData['startPoiName'] = _selectedStartPoint!['name'];
-    }
-
-    // --- END OF SIMPLIFIED LOGIC ---
 
     final itineraryRef = FirebaseFirestore.instance
         .collection('users')
@@ -164,28 +136,51 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
 
     try {
       final batch = FirebaseFirestore.instance.batch();
-      batch.set(itineraryRef, {
-        'lastModified': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
 
+      // 1. Save the event (create or update)
       if (_isEditing) {
-        final eventRef = itineraryRef
-            .collection('events')
-            .doc(widget.eventDoc!.id);
+        final eventRef =
+            itineraryRef.collection('events').doc(widget.eventDoc!.id);
         batch.update(eventRef, eventData);
       } else {
         final newEventRef = itineraryRef.collection('events').doc();
         eventData['order'] = DateTime.now().millisecondsSinceEpoch;
         batch.set(newEventRef, eventData);
+        // ⭐️ Increment totalEvents only when creating a new one
+        batch.set(itineraryRef, {'totalEvents': FieldValue.increment(1)},
+            SetOptions(merge: true));
       }
 
+      // 2. Always update lastModified time
+      batch.set(
+          itineraryRef,
+          {
+            'lastModified': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true));
+
+      // 3. Commit batch
       await batch.commit();
 
+      // ⭐️ --- START OF NEW LOGIC --- ⭐️
+      // 4. After commit, check and update the parent's lastEventDate
+      // This is done *after* the batch because it requires a read.
+      final eventTime = eventData['eventTime'] as Timestamp;
+      final itineraryDoc = await itineraryRef.get();
+      final currentLastEvent =
+          itineraryDoc.data()?['lastEventDate'] as Timestamp?;
+
+      if (currentLastEvent == null ||
+          eventTime.compareTo(currentLastEvent) > 0) {
+        // This new/edited event is now the latest one
+        await itineraryRef.update({'lastEventDate': eventTime});
+      }
+      // ⭐️ --- END OF NEW LOGIC --- ⭐️
+
       if (mounted) {
-        final successMessage =
-            _isEditing
-                ? "Updated '${eventData['destinationPoiName']}'"
-                : "Added '${eventData['destinationPoiName']}' to your plan!";
+        final successMessage = _isEditing
+            ? "Updated '${eventData['destinationPoiName']}'"
+            : "Added '${eventData['destinationPoiName']}' to your plan!";
         Navigator.pop(context, successMessage);
       }
     } catch (e) {
@@ -199,32 +194,30 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     }
   }
 
-  // --- FIRESTORE LOGIC: To delete the event ---
+  // ... (Your _deleteEvent and build methods are fine here) ...
   Future<void> _deleteEvent() async {
     if (!_isEditing) return;
 
     // 1. Show a confirmation dialog to the user
     final bool? didConfirm = await showDialog<bool>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Delete Event?'),
-            content: const Text(
-              'Are you sure you want to permanently delete this event from your itinerary?',
-            ),
-            actions: [
-              TextButton(
-                child: const Text('Cancel'),
-                onPressed:
-                    () => Navigator.of(context).pop(false), // Return false
-              ),
-              TextButton(
-                style: TextButton.styleFrom(foregroundColor: Colors.red),
-                child: const Text('Delete'),
-                onPressed: () => Navigator.of(context).pop(true), // Return true
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Event?'),
+        content: const Text(
+          'Are you sure you want to permanently delete this event from your itinerary?',
+        ),
+        actions: [
+          TextButton(
+            child: const Text('Cancel'),
+            onPressed: () => Navigator.of(context).pop(false), // Return false
           ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+            onPressed: () => Navigator.of(context).pop(true), // Return true
+          ),
+        ],
+      ),
     );
 
     // 2. Only proceed if the user confirmed
@@ -275,7 +268,7 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
               subtitle: Text(
                 _selectedDateTime != null
                     ? DateFormat.yMMMd().add_jm().format(_selectedDateTime!)
-                    : 'Tap to select',
+                    : 'Tap to select (defaults to now)', // ⭐️ Hint text
               ),
               onTap: _selectDateTime,
             ),
@@ -292,36 +285,9 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
                 _selectedDestination?['name'] ?? 'Tap to select a destination',
               ),
               trailing: const Icon(Icons.search),
-              onTap: () => _selectPoi(true),
+              onTap: _selectPoi,
             ),
             const SizedBox(height: 16),
-            // Include Start Point Checkbox
-            CheckboxListTile(
-              title: const Text('Include Starting Destination'),
-              value: _includeStartPoint,
-              onChanged:
-                  (value) =>
-                      setState(() => _includeStartPoint = value ?? false),
-            ),
-            // Start Point (conditional)
-            if (_includeStartPoint)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0, bottom: 16.0),
-                child: ListTile(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    side: BorderSide(color: Colors.grey.shade400),
-                  ),
-                  leading: const Icon(Icons.my_location, color: Colors.green),
-                  title: const Text('Starting Point'),
-                  subtitle: Text(
-                    _selectedStartPoint?['name'] ??
-                        'Tap to select a starting point',
-                  ),
-                  trailing: const Icon(Icons.search),
-                  onTap: () => _selectPoi(false),
-                ),
-              ),
             // Notes
             TextFormField(
               controller: _notesController,
@@ -338,12 +304,11 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
-              child:
-                  _isLoading
-                      ? const CircularProgressIndicator(
-                        valueColor: AlwaysStoppedAnimation(Colors.white),
-                      )
-                      : Text(_isEditing ? 'Update Event' : 'Add Event'),
+              child: _isLoading
+                  ? const CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation(Colors.white),
+                    )
+                  : Text(_isEditing ? 'Update Event' : 'Add Event'),
             ),
           ],
         ),

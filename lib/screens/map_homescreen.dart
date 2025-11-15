@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timeago/timeago.dart' as timeago;
 import '../services/marker_service.dart';
 import '../services/poi_search_delegate.dart';
 import '../widgets/profile_menu.dart';
@@ -45,9 +47,11 @@ class MapScreen extends StatefulWidget {
 String _currentTravelMode = "driving"; // driving by default
 LatLng? _lastDestination; // remember last POI clicked
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _isFollowingUser = true;
   Map<String, String>? _itinerarySummary; // 👈 ADD THIS
+  String? _itineraryTitle;
+  List<Map<String, dynamic>> _itineraryEvents = [];
   Map<String, dynamic>? _currentTransportRouteData;
   bool _locationPermissionGranted = false;
   bool _isAnimatingCamera = false;
@@ -79,6 +83,12 @@ class _MapScreenState extends State<MapScreen> {
   final double _labelZoomThreshold = 14.0; // The zoom level to show labels
   // --- START: ADD FOR TURN-BY-TURN ---
   late FlutterTts _flutterTts; // The TTS engine
+  // ⭐️ --- START OF NEW "HEADS-UP" VARIABLES --- ⭐️
+  Stream<QuerySnapshot>? _activeItineraryStream;
+  String? _activeItineraryId;
+  String? _activeItineraryName; // ⭐️ ADD THIS LINE
+  DocumentSnapshot? _activeHeadsUpEvent;
+  // ⭐️ --- END OF NEW "HEADS-UP" VARIABLES --- ⭐️
   List<Map<String, dynamic>> _navigationSteps = []; // Holds all steps
   int _currentStepIndex = 0; // Tracks which step we are on
   String _currentInstruction = ""; // The text to display and speak
@@ -252,50 +262,51 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // The main function to draw the itinerary
-  Future<void> _drawItineraryRoute(List<GeoPoint> coordinates) async {
-    if (coordinates.isEmpty) return; // ⭐️ Changed this check
+  Future<void> _drawItineraryRoute(Map<String, dynamic> itineraryData) async {
+    // Extract the title and events list
+    final String title = itineraryData['title'] ?? 'My Itinerary';
+    final List<Map<String, dynamic>> events =
+        List<Map<String, dynamic>>.from(itineraryData['events'] ?? []);
+
+    // Filter out events that don't have coordinates
+    final List<Map<String, dynamic>> eventsWithCoords =
+        events.where((event) => event['coordinates'] != null).toList();
+
+    // Create the coordinates list from the filtered events
+    final List<GeoPoint> coordinates = eventsWithCoords
+        .map((event) => event['coordinates'] as GeoPoint)
+        .toList();
+
+    if (coordinates.length < 2) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("This day has less than 2 locatable events.")));
+      }
+      return;
+    }
 
     _endNavigation();
 
-    // --- ⭐️ START OF NEW LOGIC ⭐️ ---
-    // 1. Make sure we have the user's most recent location
-    if (_lastKnownPosition == null) {
-      if (!_locationPermissionGranted) await _goToMyLocation();
-      // If still null, we can't proceed
-      if (_lastKnownPosition == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content:
-                  Text('Could not get your location to start the itinerary.')),
-        );
-        return;
-      }
-    }
+    final String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI";
 
-    // 2. Insert the user's location as the VERY FIRST point.
-    final LatLng myLocation =
-        LatLng(_lastKnownPosition!.latitude, _lastKnownPosition!.longitude);
+    final LatLng origin = LatLng(
+      coordinates.first.latitude,
+      coordinates.first.longitude,
+    );
+    final LatLng destination = LatLng(
+      coordinates.last.latitude,
+      coordinates.last.longitude,
+    );
 
-    // Create a new list of all stops
-    final List<LatLng> allStops = [
-      myLocation, // "Stop 0" is the user's location
-      // Add all the planned stops after it
-      ...coordinates.map((geo) => LatLng(geo.latitude, geo.longitude)),
-    ];
-
-    // 3. The origin is now "myLocation". The destination is the last planned stop.
-    final LatLng origin = allStops.first;
-    final LatLng destination = allStops.last;
-
-    // 4. Build waypoints from all the stops IN BETWEEN.
     String waypoints = "";
-    if (allStops.length > 2) {
-      waypoints =
-          "optimize:true|${allStops.sublist(1, allStops.length - 1).map((latLng) => "${latLng.latitude},${latLng.longitude}").join('|')}";
+    if (coordinates.length > 2) {
+      // ⭐️ FIX: Removed "optimize:true|" to force the exact planned order
+      waypoints = coordinates
+          .sublist(1, coordinates.length - 1)
+          .map((geo) => "${geo.latitude},${geo.longitude}")
+          .join('|');
     }
-    // --- ⭐️ END OF NEW LOGIC ⭐️ ---
 
-    final String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"; // Your key
     final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"
@@ -318,7 +329,6 @@ class _MapScreenState extends State<MapScreen> {
         final List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
           encodedOverviewPolyline,
         );
-
         final List<LatLng> mainRoutePoints =
             decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
@@ -327,7 +337,6 @@ class _MapScreenState extends State<MapScreen> {
           _endNavigation();
           return;
         }
-
         allPolylines.add(
           Polyline(
             polylineId: const PolylineId("itinerary_route_main"),
@@ -337,7 +346,37 @@ class _MapScreenState extends State<MapScreen> {
           ),
         );
 
-        // Loop through each leg to add off-road segments
+        // Check the Origin Point
+        if (legs.isNotEmpty) {
+          final firstLeg = legs[0];
+          final onRoadStartPoint = LatLng(
+            firstLeg["start_location"]["lat"],
+            firstLeg["start_location"]["lng"],
+          );
+          final actualOrigin = LatLng(
+            coordinates[0].latitude,
+            coordinates[0].longitude,
+          );
+          if (Geolocator.distanceBetween(
+                onRoadStartPoint.latitude,
+                onRoadStartPoint.longitude,
+                actualOrigin.latitude,
+                actualOrigin.longitude,
+              ) >
+              10) {
+            allPolylines.add(
+              Polyline(
+                polylineId: const PolylineId("itinerary_offroad_origin"),
+                color: Colors.orange.shade700,
+                width: 5,
+                points: [onRoadStartPoint, actualOrigin],
+                patterns: [PatternItem.dot, PatternItem.gap(10)],
+              ),
+            );
+          }
+        }
+
+        // Loop through legs for end points
         for (int i = 0; i < legs.length; i++) {
           final leg = legs[i];
           totalDurationSeconds += leg["duration"]["value"] as int;
@@ -347,9 +386,10 @@ class _MapScreenState extends State<MapScreen> {
             leg["end_location"]["lat"],
             leg["end_location"]["lng"],
           );
-
-          // allStops[i+1] is the *actual* destination for this leg
-          final actualDestination = allStops[i + 1];
+          final actualDestination = LatLng(
+            coordinates[i + 1].latitude,
+            coordinates[i + 1].longitude,
+          );
 
           if (Geolocator.distanceBetween(
                 onRoadEndPoint.latitude,
@@ -371,49 +411,37 @@ class _MapScreenState extends State<MapScreen> {
         }
 
         final String totalDurationText =
-            "${(totalDurationSeconds / 60).round()} min total";
+            "${(totalDurationSeconds / 60).round()} min"; // New label
         final String totalDistanceText =
             "${(totalDistanceMeters / 1000).toStringAsFixed(1)} km";
 
-        // --- ⭐️ MARKER LOGIC UPDATED ⭐️ ---
-        // 3. Prepare markers (Start Pin + Numbered Stops)
+        // Prepare numbered markers
         Set<Marker> numberedMarkers = {};
-
-        // Create the custom "Start" icon
-        final BitmapDescriptor startIcon = await _createCircleMarkerBitmap(
-          Colors.green.shade600,
-        );
-
-        for (int i = 0; i < allStops.length; i++) {
-          if (i == 0) {
-            // This is "My Location", the starting point
-            numberedMarkers.add(
-              Marker(
-                markerId: const MarkerId('itinerary_start_pin'),
-                position: allStops[i],
-                icon: startIcon,
-                anchor: const Offset(0.5, 0.5),
-                zIndex: 2,
-              ),
-            );
-          } else {
-            // These are the numbered stops (1, 2, 3...)
+        int markerNum = 1;
+        for (int i = 0; i < events.length; i++) {
+          if (events[i]['coordinates'] != null) {
+            final coords = events[i]['coordinates'] as GeoPoint;
             numberedMarkers.add(
               Marker(
                 markerId: MarkerId('itinerary_stop_$i'),
-                position: allStops[i],
-                // We pass 'i' because the 2nd stop (index 1) is "Stop 1"
-                icon: await _createNumberedCircleMarker(i),
+                position: LatLng(
+                  coords.latitude,
+                  coords.longitude,
+                ),
+                icon: await _createNumberedCircleMarker(markerNum),
                 zIndex: 2,
               ),
             );
+            markerNum++;
           }
         }
-        // --- ⭐️ END OF MARKER LOGIC ⭐️ ---
 
+        // Update the state
         setState(() {
           _polylines = allPolylines;
           _markers.addAll(numberedMarkers);
+          _itineraryTitle = title;
+          _itineraryEvents = events; // Save the full list
           _itinerarySummary = {
             'duration': totalDurationText,
             'distance': totalDistanceText,
@@ -1424,7 +1452,8 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-
+    _loadActiveItineraryStream();
+    WidgetsBinding.instance.addObserver(this);
     // --- ADD THIS ---
     _flutterTts = FlutterTts();
     // --- END ---
@@ -1454,6 +1483,12 @@ class _MapScreenState extends State<MapScreen> {
     /*WidgetsBinding.instance.addPostFrameCallback((_) {
       _goToMyLocation();
     });*/
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadActiveItineraryStream();
   }
 
   // New function to fetch user data
@@ -1526,9 +1561,24 @@ class _MapScreenState extends State<MapScreen> {
     _compassSubscription?.cancel();
     _positionStreamSubscription?.cancel();
     // --- END OF FIX ---
+    WidgetsBinding.instance.removeObserver(this);
 
     super.dispose();
   }
+
+  // ⭐️ --- ADD THIS ENTIRE FUNCTION --- ⭐️
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    // This checks if the user has returned to the app
+    if (state == AppLifecycleState.resumed) {
+      print("App resumed: Checking for new active itinerary...");
+      // Force a re-check of SharedPreferences
+      _loadActiveItineraryStream();
+    }
+  }
+  // ⭐️ --- END OF NEW FUNCTION --- ⭐️
 
   void _onMapCreated(GoogleMapController controller) {
     _mapController = controller;
@@ -1972,6 +2022,7 @@ class _MapScreenState extends State<MapScreen> {
                                         builder: (context) => EventEditorScreen(
                                           itineraryId: itineraryId,
                                           initialPoiData: data,
+                                          itineraryName: '',
                                         ),
                                       ),
                                     );
@@ -2404,6 +2455,111 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _loadActiveItineraryStream() async {
+    final prefs = await SharedPreferences.getInstance();
+    final newActiveId = prefs.getString('activeItineraryId');
+    // ⭐️ ADD THIS LINE
+    final newActiveName = prefs.getString('activeItineraryName');
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (newActiveId == _activeItineraryId && _activeItineraryStream != null) {
+      return;
+    }
+
+    _activeItineraryStream?.listen(null).cancel();
+
+    if (user != null && newActiveId != null) {
+      if (mounted) {
+        setState(() {
+          _activeItineraryId = newActiveId;
+          // ⭐️ ADD THIS LINE
+          _activeItineraryName =
+              newActiveName ?? 'My Itinerary'; // Save the name
+
+          _activeItineraryStream = FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .collection('itineraries')
+              .doc(_activeItineraryId)
+              .collection('events')
+              .where('eventTime', isGreaterThanOrEqualTo: Timestamp.now())
+              .orderBy('eventTime')
+              .snapshots();
+
+          _activeItineraryStream?.listen(_updateHeadsUpEvent);
+        });
+      }
+    } else {
+      if (mounted) {
+        setState(() {
+          _activeItineraryId = null;
+          _activeItineraryName = null; // ⭐️ ADD THIS LINE
+          _activeItineraryStream = null;
+          _activeHeadsUpEvent = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _showClearActiveTripDialog() async {
+    final bool? didConfirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Active Trip?'),
+        content: Text(
+            "Are you sure you want to remove '$_activeItineraryName' as your active trip?\n\nThis card will be hidden, and you'll need to set a new active trip from your itinerary list."),
+        actions: [
+          TextButton(
+            child: const Text('Cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Clear'),
+            onPressed: () => Navigator.of(context).pop(true),
+          ),
+        ],
+      ),
+    );
+
+    if (didConfirm == true) {
+      await _clearActiveItinerary();
+    }
+  }
+
+  /// Removes the active itinerary from SharedPreferences and updates the UI.
+  Future<void> _clearActiveItinerary() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('activeItineraryId');
+    await prefs.remove('activeItineraryName');
+
+    // Just call _loadActiveItineraryStream again. It will see the null ID
+    // and automatically clear the state variables and hide the card.
+    _loadActiveItineraryStream();
+  }
+
+// ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
+  void _updateHeadsUpEvent(QuerySnapshot snapshot) {
+    if (!mounted) return;
+
+    final now = DateTime.now();
+    DocumentSnapshot? eventForToday;
+    if (snapshot.docs.isNotEmpty) {
+      for (final doc in snapshot.docs) {
+        final eventTime = (doc['eventTime'] as Timestamp).toDate();
+        if (_isSameDay(eventTime, now)) {
+          eventForToday = doc;
+          break; // Found the first one for today
+        }
+      }
+    }
+
+    // Update the state
+    setState(() {
+      _activeHeadsUpEvent = eventForToday;
+    });
+  }
+
   // Ends navigation and hides the panel
   void _endNavigation() {
     _positionStreamSubscription?.cancel();
@@ -2416,6 +2572,8 @@ class _MapScreenState extends State<MapScreen> {
       _lastKnownPosition = null;
       _currentTransportRouteData = null; // 👈 ADD THIS LINE
       _itinerarySummary = null; // 👈 ADD THIS LINE
+      _itineraryTitle = null;
+      _itineraryEvents = [];
       _isItineraryRouteVisible = false; // 👈 ADD THIS LINE
 
       // Remove the route-specific markers
@@ -2908,13 +3066,22 @@ class _MapScreenState extends State<MapScreen> {
             zoomControlsEnabled: false,
             compassEnabled: false, // Hide compass during immersive navigation
           ),
+          if (_activeHeadsUpEvent != null &&
+              !_isNavigating &&
+              !_isItineraryRouteVisible)
+            _buildHeadsUpCard(_activeHeadsUpEvent!),
           // --- PASTE THE COMPASS WIDGET HERE AND UPDATE IT ---
           // --- Compass Widget (now animated) ---
           AnimatedPositioned(
-            // Check if nav is active AND has an instruction to display
-            top: _isNavigating && _currentInstruction.isNotEmpty
-                ? (paddingTop + 110) // Pushed down
-                : (paddingTop + 70), // Original position
+            // ⭐️ --- START OF NEW LOGIC --- ⭐️
+            top: (_isNavigating && _currentInstruction.isNotEmpty)
+                ? (paddingTop + 120) // Pushed down by turn-by-turn banner
+                : (_activeHeadsUpEvent != null &&
+                        !_isNavigating &&
+                        !_isItineraryRouteVisible)
+                    ? (paddingTop + 175) // Pushed down by heads-up card
+                    : (paddingTop + 70), // Default position
+            // ⭐️ --- END OF NEW LOGIC --- ⭐️
             right: 12,
             duration: const Duration(milliseconds: 300), // Animation duration
             curve: Curves.easeInOut, // Animation curve
@@ -2961,10 +3128,11 @@ class _MapScreenState extends State<MapScreen> {
                                 ),
                                 builder: (context) => ProfileMenu(
                                   userData: _userData,
-                                  onDrawItinerary: (coords) =>
-                                      _drawItineraryRoute(
-                                    coords,
-                                  ), // Pass the function
+                                  // Pass the new function signature
+                                  onDrawItinerary:
+                                      (Map<String, dynamic> itineraryData) {
+                                    _drawItineraryRoute(itineraryData);
+                                  },
                                 ),
                               );
                             },
@@ -3885,57 +4053,119 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  // ⭐️ REPLACE the old panel with this new DraggableScrollableSheet ⭐️
   Widget _buildItinerarySummaryPanel() {
     if (_itinerarySummary == null) return const SizedBox.shrink();
 
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Card(
-        margin: const EdgeInsets.all(12.0),
-        elevation: 8,
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              Text(
-                "Day's Itinerary",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: Theme.of(context).primaryColor,
-                ),
-              ),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.timer_outlined,
-                    size: 20,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _itinerarySummary!['duration']!,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  const Icon(Icons.map_outlined, size: 20, color: Colors.grey),
-                  const SizedBox(width: 4),
-                  Text(
-                    _itinerarySummary!['distance']!,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ],
+    return DraggableScrollableSheet(
+      initialChildSize: 0.25, // Start partially expanded
+      minChildSize: 0.15, // Can be minimized
+      maxChildSize: 0.8, // Can be dragged up
+      builder: (BuildContext context, ScrollController scrollController) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(24.0)),
+            boxShadow: [
+              BoxShadow(
+                blurRadius: 10.0,
+                color: Colors.black.withOpacity(0.2),
               ),
             ],
           ),
-        ),
-      ),
+          child: ListView(
+            controller: scrollController,
+            padding: EdgeInsets.zero,
+            children: [
+              // --- 1. The Grab Handle ---
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 5,
+                  margin: const EdgeInsets.symmetric(vertical: 12.0),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+
+              // --- 2. Title and Summary ---
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _itineraryTitle ?? 'My Itinerary', // Use the new title
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 22,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildItineraryInfoChip(
+                          Icons.timer_outlined,
+                          _itinerarySummary!['duration']!,
+                          "Total Travel Time", // New label
+                        ),
+                        const SizedBox(width: 12),
+                        _buildItineraryInfoChip(
+                          Icons.map_outlined,
+                          _itinerarySummary!['distance']!,
+                          "Total Distance",
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 24.0, thickness: 1.0),
+
+              // --- 3. The Event List ---
+              ...List.generate(_itineraryEvents.length, (index) {
+                final event = _itineraryEvents[index];
+                final time = (event['time'] as Timestamp).toDate();
+
+                int? markerNum;
+                if (event['coordinates'] != null) {
+                  markerNum = _itineraryEvents
+                      .sublist(0, index + 1)
+                      .where((e) => e['coordinates'] != null)
+                      .length;
+                }
+
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: markerNum != null
+                        ? Colors.orange.shade700
+                        : Colors.grey.shade400,
+                    foregroundColor: Colors.white,
+                    child: Text(
+                      markerNum != null ? '$markerNum' : '-',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  title: Text(
+                    event['name'] ?? 'Event',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    DateFormat.jm().format(time),
+                  ),
+                );
+              }),
+              const SizedBox(height: 20), // Add padding at the bottom
+            ],
+          ),
+        );
+      },
     );
   }
   // In lib/screens/map_homescreen.dart -> _MapScreenState
@@ -4160,5 +4390,104 @@ class _MapScreenState extends State<MapScreen> {
     }, onError: (error) {
       print("❌ ERROR in closure listener: $error");
     });
+  }
+
+  Widget _buildItineraryInfoChip(IconData icon, String value, String label) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(icon, color: Theme.of(context).primaryColor, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _isSameDay(DateTime dateA, DateTime dateB) {
+    return dateA.year == dateB.year &&
+        dateA.month == dateB.month &&
+        dateA.day == dateB.day;
+  }
+
+  Widget _buildHeadsUpCard(DocumentSnapshot eventDoc) {
+    final event = eventDoc.data() as Map<String, dynamic>;
+    final eventTime = (event['eventTime'] as Timestamp).toDate();
+    final String eventName = event['destinationPoiName'] ?? 'Event';
+    final String itineraryName = event['itineraryName'] ?? 'Active Trip';
+    final String timeAgo = timeago.format(eventTime);
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 70, // Below the search bar
+      left: 12,
+      right: 12,
+      child: Card(
+        elevation: 8,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: LinearGradient(
+              colors: [
+                Theme.of(context).primaryColor,
+                Theme.of(context).primaryColor.withAlpha(220),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 10,
+            ),
+            leading: const Icon(
+              Icons.notifications_active,
+              color: Colors.white,
+              size: 30,
+            ),
+            title: Text(
+              'Up Next: $eventName',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                fontSize: 18,
+              ),
+            ),
+            subtitle: Text(
+              'From: $itineraryName • ($timeAgo)',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            // ⭐️ --- ADD THIS TRAILING WIDGET --- ⭐️
+            trailing: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: _showClearActiveTripDialog,
+              tooltip: 'Clear active trip',
+            ),
+            // ⭐️ --- END OF ADDITION --- ⭐️
+          ),
+        ),
+      ),
+    );
   }
 }
