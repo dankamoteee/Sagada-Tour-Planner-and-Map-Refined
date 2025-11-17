@@ -6,17 +6,20 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_screen.dart';
-import 'recently_viewed_screen.dart';
+// import 'recently_viewed_screen.dart'; // <-- REMOVED
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:provider/provider.dart';
+import '../providers/theme_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
-  final Map<String, dynamic> userData; // <-- ADD THIS
+  final Map<String, dynamic> userData;
   const ProfileScreen({
     super.key,
     required this.userId,
-    required this.userData, // <-- ADD THIS
+    required this.userData,
   });
 
   @override
@@ -27,19 +30,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final ImagePicker _picker = ImagePicker();
   bool _isUploading = false;
 
-  // Define your custom theme color
-  final Color themeColor = const Color(0xFF3A6A55);
+  // ⭐️ --- ADDED CONTROLLERS AND VARIABLES --- ⭐️
+  final TextEditingController _usernameController = TextEditingController();
+  String? _selectedMapStyle;
 
-  // --- ADD THIS ---
+  final Color themeColor = const Color(0xFF3A6A55);
   late Map<String, dynamic> _userData;
 
   @override
   void initState() {
     super.initState();
-    // Initialize the state variable from the widget property
     _userData = widget.userData;
+    _usernameController.text = _userData['username'] ?? '';
+    _loadMapStylePreference();
   }
-  // --- END ADD ---
+
+  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
+  /// Loads the saved map style from SharedPreferences
+  Future<void> _loadMapStylePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      // Defaults to 'tourism.json' if nothing is set
+      _selectedMapStyle = prefs.getString('mapStyle') ?? 'tourism.json';
+    });
+  }
+
+  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
+  /// Saves the map style preference
+  Future<void> _setMapStylePreference(String? style) async {
+    if (style == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('mapStyle', style);
+    setState(() {
+      _selectedMapStyle = style;
+    });
+  }
 
   Future<void> _changeProfilePicture() async {
     final XFile? image = await _picker.pickImage(
@@ -48,7 +73,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
     if (image == null) return;
 
-    // Set loading state
     if (mounted) setState(() => _isUploading = true);
 
     try {
@@ -61,42 +85,88 @@ class _ProfileScreenState extends State<ProfileScreen> {
       await ref.putFile(File(image.path));
       final url = await ref.getDownloadURL();
 
-      // --- ADD THIS ---
-      // Clear the old image from the cache
       await DefaultCacheManager().removeFile(url);
-      // --- END ADD ---
 
       await FirebaseFirestore.instance
           .collection('users')
           .doc(widget.userId)
           .set({'profilePictureUrl': url}, SetOptions(merge: true));
 
-      // --- ADD THIS TO UPDATE THE UI ---
       if (mounted) {
         setState(() {
-          _userData['profilePictureUrl'] = url; // Update the local data
-          _isUploading = false; // Stop loading
+          _userData['profilePictureUrl'] = url;
+          _isUploading = false;
         });
       }
-      // --- END ADD ---
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text("Failed to upload image: $e")));
-        // Ensure loading stops on error
         setState(() => _isUploading = false);
       }
     }
-    // We no longer need the 'finally' block as setState is handled in 'try' and 'catch'
+  }
+
+  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
+  /// Shows a dialog to edit the username
+  Future<void> _showEditUsernameDialog() async {
+    _usernameController.text =
+        _userData['username'] ?? ''; // Ensure controller is up-to-date
+
+    final newUsername = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Change Username'),
+        content: TextField(
+          controller: _usernameController,
+          decoration: const InputDecoration(hintText: "Enter a username"),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, _usernameController.text);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (newUsername != null && newUsername.isNotEmpty) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.userId)
+            .update({'username': newUsername});
+
+        if (mounted) {
+          setState(() {
+            _userData['username'] = newUsername; // Update local data
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Username updated!")),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error updating username: $e")),
+          );
+        }
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // The data now comes directly from the widget, not a stream
     final userData = _userData;
 
-    // All your variable declarations are the same
     final String fullName = userData['fullName'] ?? 'No Name';
     final String username = userData['username'] ?? 'no_username';
     final String email = userData['email'] ?? 'No email';
@@ -107,7 +177,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'MMMM d, yyyy',
     ).format(createdAt.toDate());
 
-    // The Scaffold and CustomScrollView are the same, just without the StreamBuilder
     return Scaffold(
       backgroundColor: Colors.grey[100],
       body: CustomScrollView(
@@ -115,7 +184,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           SliverAppBar(
             expandedHeight: 250.0,
             pinned: true,
-            backgroundColor: themeColor, // Use custom color
+            backgroundColor: themeColor,
             leading: IconButton(
               icon: const Icon(Icons.arrow_back, color: Colors.white),
               onPressed: () => Navigator.pop(context),
@@ -158,38 +227,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         children: [
                           CircleAvatar(
                             radius: 46,
-                            backgroundColor:
-                                Colors
-                                    .grey
-                                    .shade300, // This is your placeholder color
+                            backgroundColor: Colors.grey.shade300,
                             child: ClipOval(
-                              // Clip the image to a circle
-                              child:
-                                  (photoUrl != null && photoUrl.isNotEmpty)
-                                      ? CachedNetworkImage(
-                                        imageUrl: photoUrl,
-                                        fit: BoxFit.cover,
-                                        width: 92, // 46 * 2
-                                        height: 92, // 46 * 2
-                                        // Show this while loading
-                                        placeholder:
-                                            (context, url) => Container(
-                                              color: Colors.grey.shade300,
-                                            ),
-                                        // This is your old 'child' logic
-                                        errorWidget:
-                                            (context, url, error) => const Icon(
-                                              Icons.person,
-                                              size: 50,
-                                              color: Colors.white,
-                                            ),
-                                      )
-                                      // This is if photoUrl is null or empty
-                                      : const Icon(
+                              child: (photoUrl != null && photoUrl.isNotEmpty)
+                                  ? CachedNetworkImage(
+                                      imageUrl: photoUrl,
+                                      fit: BoxFit.cover,
+                                      width: 92,
+                                      height: 92,
+                                      placeholder: (context, url) => Container(
+                                        color: Colors.grey.shade300,
+                                      ),
+                                      errorWidget: (context, url, error) =>
+                                          const Icon(
                                         Icons.person,
                                         size: 50,
                                         color: Colors.white,
                                       ),
+                                    )
+                                  : const Icon(
+                                      Icons.person,
+                                      size: 50,
+                                      color: Colors.white,
+                                    ),
                             ),
                           ),
                           Positioned(
@@ -200,20 +260,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               child: CircleAvatar(
                                 radius: 18,
                                 backgroundColor: Colors.white,
-                                child:
-                                    _isUploading
-                                        ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                        : Icon(
-                                          Icons.edit,
-                                          color: themeColor,
-                                          size: 20,
-                                        ), // Use custom color
+                                child: _isUploading
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : Icon(
+                                        Icons.edit,
+                                        color: themeColor,
+                                        size: 20,
+                                      ),
                               ),
                             ),
                           ),
@@ -232,8 +291,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 context,
                 title: "User Details",
                 children: [
-                  _buildDetailRow(Icons.person_outline, "Username", username),
-                  _buildDetailRow(Icons.email_outlined, "Email", email),
+                  // ⭐️ --- MODIFIED THIS --- ⭐️
+                  _buildEditableDetailRow(
+                    Icons.person_outline,
+                    "Username",
+                    username,
+                    onEdit: _showEditUsernameDialog,
+                  ),
+                  _buildDetailRow(Icons.email_outlined, "Email", email,
+                      isEmail: true),
                   _buildDetailRow(Icons.phone_outlined, "Phone", phone),
                   _buildDetailRow(
                     Icons.calendar_today_outlined,
@@ -242,74 +308,119 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ],
               ),
+              // ⭐️ --- ADDED THIS CARD --- ⭐️
               _buildInfoCard(
                 context,
-                title: "My Activities",
+                title: "App Preferences",
                 children: [
-                  _buildActionRow("My Itinerary", Icons.list_alt_outlined, () {
-                    // TODO: Navigate to Itinerary Screen
-                  }),
-                  _buildActionRow(
-                    "Recently Viewed",
-                    Icons.history_outlined,
-                    () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const RecentlyViewedScreen(),
-                        ),
+                  _buildMapStyleDropdown(),
+                  Consumer<ThemeProvider>(
+                    // 1. Use a Consumer to get the provider
+                    builder: (context, themeProvider, child) {
+                      return SwitchListTile(
+                        title: const Text("Dark Mode"),
+                        // 2. Set the value from the provider
+                        value: themeProvider.themeMode == ThemeMode.dark,
+                        // 3. Call the provider's method on change
+                        onChanged: (bool value) {
+                          themeProvider.setTheme(value);
+                        },
+                        secondary: Icon(Icons.dark_mode_outlined,
+                            color: Colors.grey.shade600),
                       );
                     },
                   ),
                 ],
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 24,
-                ),
-                child: TextButton.icon(
-                  icon: const Icon(Icons.logout, color: Colors.red),
-                  label: const Text(
-                    "Sign Out",
-                    style: TextStyle(color: Colors.red, fontSize: 16),
-                  ),
-                  onPressed: () async {
-                    final bool? shouldLogout = await showDialog<bool>(
-                      context: context,
-                      builder:
-                          (context) => AlertDialog(
-                            title: const Text('Confirm Sign Out'),
-                            content: const Text(
-                              'Are you sure you want to sign out?',
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text('Cancel'),
-                              ),
-                              TextButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('Sign Out'),
-                              ),
-                            ],
-                          ),
-                    );
-                    if (shouldLogout == true) {
-                      await FirebaseAuth.instance.signOut();
-                      await Future.delayed(const Duration(milliseconds: 300));
-                      if (mounted) {
-                        Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(
-                            builder: (context) => const LoginScreen(),
-                          ),
-                          (Route<dynamic> route) => false,
+              // ⭐️ --- ADDED THIS CARD --- ⭐️
+              _buildInfoCard(
+                context,
+                title: "Account Management",
+                children: [
+                  _buildAccountActionRow(
+                    "Change Password",
+                    Icons.lock_outline,
+                    Colors.grey.shade700,
+                    () async {
+                      if (email.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content:
+                                  Text("No email on file to send reset link.")),
+                        );
+                        return;
+                      }
+                      try {
+                        await FirebaseAuth.instance
+                            .sendPasswordResetEmail(email: email);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                              content:
+                                  Text("Password reset email sent to $email.")),
+                        );
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text("Error: ${e.toString()}")),
                         );
                       }
-                    }
-                  },
-                ),
+                    },
+                  ),
+                  _buildAccountActionRow(
+                    "Sign Out",
+                    Icons.logout,
+                    Colors.red,
+                    () async {
+                      final bool? shouldLogout = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Confirm Sign Out'),
+                          content: const Text(
+                            'Are you sure you want to sign out?',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('Sign Out'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (shouldLogout == true) {
+                        await FirebaseAuth.instance.signOut();
+                        await Future.delayed(const Duration(milliseconds: 300));
+                        if (mounted) {
+                          Navigator.of(context).pushAndRemoveUntil(
+                            MaterialPageRoute(
+                              builder: (context) => const LoginScreen(),
+                            ),
+                            (Route<dynamic> route) => false,
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  _buildAccountActionRow(
+                    "Delete Account",
+                    Icons.delete_forever_outlined,
+                    Colors.red,
+                    () {
+                      // TODO: Implement full account deletion logic.
+                      // This is complex and requires deleting all user sub-collections.
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text(
+                                "Delete account feature not implemented yet.")),
+                      );
+                    },
+                  ),
+                ],
               ),
+              // --- REMOVED "My Activities" CARD ---
+              const SizedBox(height: 24),
             ]),
           ),
         ],
@@ -321,6 +432,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     BuildContext context, {
     required String title,
     required List<Widget> children,
+    Widget? actionButton,
   }) {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -331,14 +443,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: themeColor,
-              ),
-            ), // Use custom color
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: themeColor,
+                  ),
+                ),
+                if (actionButton != null) actionButton,
+              ],
+            ),
             const Divider(height: 20),
             ...children,
           ],
@@ -347,40 +465,127 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String title, String value) {
+  Widget _buildDetailRow(IconData icon, String title, String value,
+      {bool isEmail = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         children: [
           Icon(icon, color: Colors.grey.shade600, size: 20),
           const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                 ),
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: isEmail ? TextOverflow.ellipsis : TextOverflow.clip,
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildActionRow(String title, IconData icon, VoidCallback onTap) {
+  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
+  /// A detail row with an edit button on the far right.
+  Widget _buildEditableDetailRow(IconData icon, String title, String value,
+      {required VoidCallback onEdit}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.grey.shade600, size: 20),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            iconSize: 20,
+            color: Colors.grey.shade600,
+            tooltip: "Edit $title",
+            onPressed: onEdit,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
+  /// Builds the dropdown for map style selection
+  Widget _buildMapStyleDropdown() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: DropdownButtonFormField<String>(
+        value: _selectedMapStyle,
+        decoration: InputDecoration(
+          labelText: "Default Map Style",
+          prefixIcon: Icon(Icons.map_outlined, color: Colors.grey.shade600),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide.none,
+          ),
+          filled: true,
+          fillColor: Colors.grey.shade100,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        ),
+        items: const [
+          DropdownMenuItem(
+            value: 'tourism.json',
+            child: Text('Tourism'),
+          ),
+          DropdownMenuItem(
+            value: 'clean.json',
+            child: Text('Clean'),
+          ),
+          // "Default" option removed as requested
+        ],
+        onChanged: (value) {
+          _setMapStylePreference(value);
+        },
+      ),
+    );
+  }
+
+  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
+  /// Builds a clickable row for the Account Management card
+  Widget _buildAccountActionRow(
+      String title, IconData icon, Color color, VoidCallback onTap) {
     return ListTile(
-      leading: Icon(icon, color: themeColor), // Use custom color
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
-      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+      leading: Icon(icon, color: color),
+      title: Text(title,
+          style: TextStyle(fontWeight: FontWeight.w500, color: color)),
+      trailing: Icon(Icons.arrow_forward_ios, size: 16, color: color),
+      contentPadding: EdgeInsets.zero, // Make it align with other rows
       onTap: onTap,
     );
   }

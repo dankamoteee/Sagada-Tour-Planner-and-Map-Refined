@@ -7,7 +7,7 @@ class TourGuide {
   final String name;
   final String org;
   final String phone;
-  final String email;
+  // final String email; // <-- REMOVED
   final String imageUrl;
   final List<String> areas;
 
@@ -15,7 +15,7 @@ class TourGuide {
     required this.name,
     required this.org,
     required this.phone,
-    required this.email,
+    // required this.email, // <-- REMOVED
     required this.imageUrl,
     required this.areas,
   });
@@ -26,7 +26,7 @@ class TourGuide {
       name: data['name'] ?? 'No Name',
       org: data['org'] ?? 'No Organization',
       phone: data['phone'] ?? '',
-      email: data['email'] ?? '',
+      // email: data['email'] ?? '', // <-- REMOVED
       imageUrl: data['image'] ?? '', // Assumes field is named 'image'
       areas: List<String>.from(
         data['area'] is List ? data['area'] : [data['area']],
@@ -67,16 +67,14 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
 
   Future<void> _fetchAndPrepareGuides() async {
     try {
-      final querySnapshot =
-          await FirebaseFirestore.instance
-              .collection('tourGuides')
-              // Optional: You can add .where('isActive', isEqualTo: true) here
-              .get();
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('tourGuides')
+          // Optional: You can add .where('isActive', isEqualTo: true) here
+          .get();
 
-      final guides =
-          querySnapshot.docs
-              .map((doc) => TourGuide.fromFirestore(doc))
-              .toList();
+      final guides = querySnapshot.docs
+          .map((doc) => TourGuide.fromFirestore(doc))
+          .toList();
 
       // Shuffle the list for randomness
       guides.shuffle();
@@ -113,10 +111,9 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
     // 2. Filter by search query
     final searchQuery = _searchController.text.toLowerCase();
     if (searchQuery.isNotEmpty) {
-      filteredGuides =
-          filteredGuides.where((guide) {
-            return guide.name.toLowerCase().contains(searchQuery);
-          }).toList();
+      filteredGuides = filteredGuides.where((guide) {
+        return guide.name.toLowerCase().contains(searchQuery);
+      }).toList();
     }
 
     setState(() {
@@ -163,12 +160,11 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
                       topRight: Radius.circular(16),
                     ),
                     image: DecorationImage(
-                      image:
-                          guide.imageUrl.isNotEmpty
-                              ? NetworkImage(guide.imageUrl) as ImageProvider
-                              : const AssetImage(
-                                'assets/placeholder_person.png',
-                              ), // Provide a local asset placeholder
+                      image: guide.imageUrl.isNotEmpty
+                          ? NetworkImage(guide.imageUrl) as ImageProvider
+                          : const AssetImage(
+                              'assets/placeholder_person.png',
+                            ), // Provide a local asset placeholder
                       fit: BoxFit.cover,
                       colorFilter: ColorFilter.mode(
                         Colors.black.withOpacity(
@@ -259,60 +255,13 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
                             launchUrlHelper(phoneUri);
                           },
                         ),
-                      if (guide.email.isNotEmpty)
-                        ListTile(
-                          leading: const Icon(
-                            Icons.email_outlined,
-                            color: Colors.orangeAccent,
-                          ),
-                          title: const Text(
-                            'Email',
-                            style: TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          subtitle: Text(guide.email),
-                          onTap: () {
-                            final Uri emailUri = Uri(
-                              scheme: 'mailto',
-                              path: guide.email,
-                            );
-                            launchUrlHelper(emailUri);
-                          },
-                        ),
+                      // --- REMOVED EMAIL LISTTILE ---
                       const SizedBox(height: 16),
                       // --- Action Buttons ---
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          if (guide.email.isNotEmpty)
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 4.0,
-                                ),
-                                child: ElevatedButton.icon(
-                                  icon: const Icon(Icons.email),
-                                  label: const Text('Email'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        Colors.orange, // Brighter orange
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                  ),
-                                  onPressed: () {
-                                    final Uri emailUri = Uri(
-                                      scheme: 'mailto',
-                                      path: guide.email,
-                                    );
-                                    launchUrlHelper(emailUri);
-                                  },
-                                ),
-                              ),
-                            ),
+                          // --- REMOVED EMAIL BUTTON ---
                           if (guide.phone.isNotEmpty)
                             Expanded(
                               child: Padding(
@@ -361,117 +310,116 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       // The main layout is now a CustomScrollView, which works with slivers
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : CustomScrollView(
-                slivers: [
-                  // 1. The Collapsing App Bar (SliverAppBar)
-                  SliverAppBar(
-                    pinned:
-                        true, // The app bar stays visible at the top when collapsed
-                    expandedHeight:
-                        220.0, // How tall the header is when fully expanded
-                    backgroundColor: const Color(0xFF3A6A55),
-                    foregroundColor: Colors.white,
-                    flexibleSpace: FlexibleSpaceBar(
-                      centerTitle: true,
-                      title: const Text(
-                        'Tour Guides',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : CustomScrollView(
+              slivers: [
+                // 1. The Collapsing App Bar (SliverAppBar)
+                SliverAppBar(
+                  pinned:
+                      true, // The app bar stays visible at the top when collapsed
+                  expandedHeight:
+                      220.0, // How tall the header is when fully expanded
+                  backgroundColor: const Color(0xFF3A6A55),
+                  foregroundColor: Colors.white,
+                  flexibleSpace: FlexibleSpaceBar(
+                    centerTitle: true,
+                    title: const Text(
+                      'Tour Guides',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
                       ),
-                      background: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          // The background image
-                          Image.asset(
-                            'assets/images/tourguide_background.png', // <-- CHANGE TO YOUR IMAGE PATH
-                            fit: BoxFit.cover,
-                          ),
-                          // The gradient overlay for text readability
-                          Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Colors.transparent,
-                                  Colors.black.withOpacity(0.7),
-                                ],
-                              ),
+                    ),
+                    background: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        // The background image
+                        Image.asset(
+                          'assets/images/tourguide_background.png', // <-- CHANGE TO YOUR IMAGE PATH
+                          fit: BoxFit.cover,
+                        ),
+                        // The gradient overlay for text readability
+                        Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.black.withOpacity(0.7),
+                              ],
                             ),
                           ),
-                        ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // 2. The Search Bar (wrapped in SliverToBoxAdapter)
+                // This widget allows you to place a regular widget inside a CustomScrollView
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                    child: TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        hintText: 'Search for a guide...',
+                        prefixIcon: const Icon(Icons.search),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey[200],
                       ),
                     ),
                   ),
+                ),
 
-                  // 2. The Search Bar (wrapped in SliverToBoxAdapter)
-                  // This widget allows you to place a regular widget inside a CustomScrollView
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                      child: TextField(
-                        controller: _searchController,
-                        decoration: InputDecoration(
-                          hintText: 'Search for a guide...',
-                          prefixIcon: const Icon(Icons.search),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
+                // 3. The Filter Chips (also in SliverToBoxAdapter)
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 60,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                      itemCount: _organizations.length,
+                      itemBuilder: (context, index) {
+                        final org = _organizations[index];
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4.0,
                           ),
-                          filled: true,
-                          fillColor: Colors.grey[200],
-                        ),
-                      ),
+                          child: ChoiceChip(
+                            label: Text(org),
+                            selected: _selectedOrg == org,
+                            onSelected: (isSelected) {
+                              if (isSelected) {
+                                setState(() {
+                                  _selectedOrg = org;
+                                  if (org == 'All') {
+                                    _allGuides.shuffle();
+                                  }
+                                });
+                                _updateDisplayedGuides();
+                              }
+                            },
+                          ),
+                        );
+                      },
                     ),
                   ),
+                ),
 
-                  // 3. The Filter Chips (also in SliverToBoxAdapter)
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 60,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 8,
-                        ),
-                        itemCount: _organizations.length,
-                        itemBuilder: (context, index) {
-                          final org = _organizations[index];
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 4.0,
-                            ),
-                            child: ChoiceChip(
-                              label: Text(org),
-                              selected: _selectedOrg == org,
-                              onSelected: (isSelected) {
-                                if (isSelected) {
-                                  setState(() {
-                                    _selectedOrg = org;
-                                    if (org == 'All') {
-                                      _allGuides.shuffle();
-                                    }
-                                  });
-                                  _updateDisplayedGuides();
-                                }
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-
-                  // 4. The Grid of Guides (using SliverGrid)
-                  // Use SliverPadding to add space around the grid
-                  _displayedGuides.isEmpty
-                      ? SliverFillRemaining(
+                // 4. The Grid of Guides (using SliverGrid)
+                // Use SliverPadding to add space around the grid
+                _displayedGuides.isEmpty
+                    ? SliverFillRemaining(
                         child: Center(
                           child: Text(
                             'No tour guides found for your search.',
@@ -479,33 +427,32 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
                           ),
                         ),
                       )
-                      : SliverPadding(
+                    : SliverPadding(
                         padding: const EdgeInsets.all(12),
                         sliver: SliverGrid(
                           gridDelegate:
                               const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 12,
-                                childAspectRatio: 0.8,
-                              ),
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 12,
+                            childAspectRatio: 0.8,
+                          ),
                           delegate: SliverChildBuilderDelegate((
                             context,
                             index,
                           ) {
                             return TourGuideCard(
                               guide: _displayedGuides[index],
-                              onTap:
-                                  () => _showGuideDetailsDialog(
-                                    context,
-                                    _displayedGuides[index],
-                                  ),
+                              onTap: () => _showGuideDetailsDialog(
+                                context,
+                                _displayedGuides[index],
+                              ),
                             );
                           }, childCount: _displayedGuides.length),
                         ),
                       ),
-                ],
-              ),
+              ],
+            ),
     );
   }
 }

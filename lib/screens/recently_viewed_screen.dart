@@ -68,13 +68,12 @@ class RecentlyViewedScreen extends StatelessWidget {
           // --- BODY CONTENT ---
           SliverToBoxAdapter(
             child: StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance
-                      .collection('users')
-                      .doc(userId)
-                      .collection('recentlyViewed')
-                      .orderBy('viewedAt', descending: true)
-                      .snapshots(),
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(userId)
+                  .collection('recentlyViewed')
+                  .orderBy('viewedAt', descending: true)
+                  .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
@@ -127,6 +126,22 @@ class _GridItemCard extends StatelessWidget {
 
   const _GridItemCard({required this.item});
 
+  // ⭐️ --- ADD THIS HELPER --- ⭐️
+  /// Safely parses coordinates from different Firestore data types.
+  GeoPoint? _parseCoordinates(Map<String, dynamic>? poiData) {
+    if (poiData == null) return null;
+    final dynamic coordsData = poiData['coordinates'];
+    if (coordsData is GeoPoint) {
+      return coordsData;
+    } else if (coordsData is Map) {
+      return GeoPoint(
+        coordsData['latitude'] ?? 0.0,
+        coordsData['longitude'] ?? 0.0,
+      );
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final String name = item['name'] ?? 'Unknown Place';
@@ -147,9 +162,8 @@ class _GridItemCard extends StatelessWidget {
             Image.network(
               imageUrl,
               fit: BoxFit.cover,
-              errorBuilder:
-                  (context, error, stackTrace) =>
-                      const Icon(Icons.broken_image),
+              errorBuilder: (context, error, stackTrace) =>
+                  const Icon(Icons.broken_image),
             )
           else
             Container(
@@ -200,9 +214,54 @@ class _GridItemCard extends StatelessWidget {
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: () {
-                // TODO: Handle tap to view POI details on the map
+              // --- START OF MODIFICATION ---
+              onTap: () async {
+                // 1. Get the POI ID from the recently viewed item.
+                final String? poiId = item['poiId'];
+                if (poiId == null) return;
+
+                // 2. Show a loading dialog
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => const Center(
+                    child: CircularProgressIndicator(),
+                  ),
+                );
+
+                try {
+                  // 3. Fetch the full, up-to-date POI document
+                  final doc = await FirebaseFirestore.instance
+                      .collection('POIs')
+                      .doc(poiId)
+                      .get();
+
+                  if (doc.exists && context.mounted) {
+                    final poiData = doc.data() as Map<String, dynamic>;
+
+                    // 4. IMPORTANT: Add the extra fields MapScreen needs
+                    poiData['id'] = doc.id;
+                    final GeoPoint? coords = _parseCoordinates(poiData);
+                    if (coords != null) {
+                      poiData['lat'] = coords.latitude;
+                      poiData['lng'] = coords.longitude;
+                    }
+
+                    // 5. Pop the loading dialog
+                    Navigator.of(context).pop();
+                    // 6. Pop the RecentlyViewedScreen, sending the data back
+                    Navigator.of(context).pop(poiData);
+                  } else {
+                    // 7. Handle if POI was deleted
+                    if (context.mounted) Navigator.of(context).pop();
+                  }
+                } catch (e) {
+                  // 8. Handle errors
+                  if (context.mounted) Navigator.of(context).pop();
+                  print("Error fetching POI: $e");
+                }
               },
+              // --- END OF MODIFICATION ---
             ),
           ),
         ],

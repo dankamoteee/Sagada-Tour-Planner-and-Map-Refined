@@ -58,7 +58,7 @@ dependencies:
   image_picker: ^1.2.1
   url_launcher: ^6.3.0
   flutter_contacts: ^1.1.9+2
-  flutter_tts: ^3.8.3 # For text-to-speech
+  flutter_tts: ^4.2.3 # For text-to-speech
   html_unescape: ^2.0.0
   google_maps_utils: ^2.0.0+1
 

@@ -26,6 +26,8 @@ import 'event_editor_screen.dart';
 import 'package:flutter_tts/flutter_tts.dart'; // 👈 ADD THIS
 import 'package:html_unescape/html_unescape.dart'; // 👈 ADD THIS (for cleaning text)
 import 'package:maps_toolkit/maps_toolkit.dart' as map_tools;
+import 'guidelines_screen.dart';
+import 'itinerary_detail_screen.dart';
 
 // Enum to manage the panel's visibility state
 enum NavigationPanelState { hidden, minimized, expanded }
@@ -88,6 +90,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _activeItineraryId;
   String? _activeItineraryName; // ⭐️ ADD THIS LINE
   DocumentSnapshot? _activeHeadsUpEvent;
+  Timer? _headsUpTimer;
   // ⭐️ --- END OF NEW "HEADS-UP" VARIABLES --- ⭐️
   List<Map<String, dynamic>> _navigationSteps = []; // Holds all steps
   int _currentStepIndex = 0; // Tracks which step we are on
@@ -972,7 +975,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           ),
                           dense: true,
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 5),
                       ],
                     ),
                   ),
@@ -981,25 +984,56 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           ),
           actions: <Widget>[
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).primaryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  textStyle: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+            // 1. We wrap the buttons in a Column
+            Column(
+              children: [
+                // 2. The new "Read Full Guidelines" button
+                TextButton(
+                  child: const Text('Read Full Tour Guidelines'),
+                  onPressed: () {
+                    // 3. This will navigate to your new screen.
+                    //    Make sure you've added the import at the top.
+
+                    // --- UNCOMMENT THIS ONCE YOUR SCREEN IS READY ---
+
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const GuidelinesScreen(),
+                      ),
+                    );
+
+                    // --- DELETE THIS SNACKBAR (it's a placeholder) ---
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Navigate to GuidelinesScreen() here."),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 4), // Spacer
+
+                // 4. The existing "I Understand" button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    child: const Text('I Understand'),
+                    onPressed: () => Navigator.of(context).pop(true),
                   ),
                 ),
-                child: const Text('I Understand'),
-                onPressed: () => Navigator.of(context).pop(true),
-              ),
-            ),
+              ],
+            )
           ],
         );
       },
@@ -1480,6 +1514,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _listenToClosures();
     });
 
+    // ⭐️ --- ADD THIS TIMER --- ⭐️
+    // This will periodically re-check the itinerary stream
+    _headsUpTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      if (mounted) {
+        // This will force the stream to re-query Firestore with a new Timestamp.now()
+        _loadActiveItineraryStream(forceReload: true);
+      }
+    });
+    // ⭐️ --- END OF ADDITION --- ⭐️
+
     /*WidgetsBinding.instance.addPostFrameCallback((_) {
       _goToMyLocation();
     });*/
@@ -1561,6 +1605,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _compassSubscription?.cancel();
     _positionStreamSubscription?.cancel();
     // --- END OF FIX ---
+    _headsUpTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
 
     super.dispose();
@@ -1574,15 +1619,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     // This checks if the user has returned to the app
     if (state == AppLifecycleState.resumed) {
       print("App resumed: Checking for new active itinerary...");
+      // ⭐️ --- MODIFIED THIS LINE --- ⭐️
       // Force a re-check of SharedPreferences
-      _loadActiveItineraryStream();
+      _loadActiveItineraryStream(forceReload: true);
     }
   }
   // ⭐️ --- END OF NEW FUNCTION --- ⭐️
 
-  void _onMapCreated(GoogleMapController controller) {
+  void _onMapCreated(GoogleMapController controller) async {
+    // 1. Make it async
     _mapController = controller;
-    _setMapStyle('tourism.json');
+
+    // 2. Read the preference
+    final prefs = await SharedPreferences.getInstance();
+    final styleName =
+        prefs.getString('mapStyle') ?? 'tourism.json'; // Default to tourism
+
+    // 3. Set the style from preferences
+    _setMapStyle(styleName);
   }
 
   void _onFilterChanged(String? newFilter) {
@@ -2455,17 +2509,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _loadActiveItineraryStream() async {
+  Future<void> _loadActiveItineraryStream({bool forceReload = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final newActiveId = prefs.getString('activeItineraryId');
     // ⭐️ ADD THIS LINE
     final newActiveName = prefs.getString('activeItineraryName');
     final user = FirebaseAuth.instance.currentUser;
 
-    if (newActiveId == _activeItineraryId && _activeItineraryStream != null) {
+    // We modify this check to allow a forced reload
+    if (!forceReload &&
+        newActiveId == _activeItineraryId &&
+        _activeItineraryStream != null) {
       return;
     }
 
+    // Cancel any existing stream listener before creating a new one
     _activeItineraryStream?.listen(null).cancel();
 
     if (user != null && newActiveId != null) {
@@ -2482,7 +2540,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               .collection('itineraries')
               .doc(_activeItineraryId)
               .collection('events')
-              .where('eventTime', isGreaterThanOrEqualTo: Timestamp.now())
+              .where('eventTime',
+                  isGreaterThanOrEqualTo:
+                      Timestamp.now()) // This query is the key
               .orderBy('eventTime')
               .snapshots();
 
@@ -2542,19 +2602,31 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _updateHeadsUpEvent(QuerySnapshot snapshot) {
     if (!mounted) return;
 
+    // --- START OF MODIFICATION ---
+    // 1. Check if the query for ALL upcoming events returned empty.
+    if (snapshot.docs.isEmpty) {
+      // 2. This means the itinerary is officially "finished".
+      print("No upcoming events found. Clearing active itinerary.");
+      // 3. Call the existing function to clear the ID from SharedPreferences.
+      _clearActiveItinerary();
+      return; // Stop processing.
+    }
+    // --- END OF MODIFICATION ---
+
     final now = DateTime.now();
     DocumentSnapshot? eventForToday;
-    if (snapshot.docs.isNotEmpty) {
-      for (final doc in snapshot.docs) {
-        final eventTime = (doc['eventTime'] as Timestamp).toDate();
-        if (_isSameDay(eventTime, now)) {
-          eventForToday = doc;
-          break; // Found the first one for today
-        }
+
+    // This logic now only runs if we are sure there are upcoming events.
+    for (final doc in snapshot.docs) {
+      final eventTime = (doc['eventTime'] as Timestamp).toDate();
+      if (_isSameDay(eventTime, now)) {
+        eventForToday = doc;
+        break; // Found the first one for today
       }
     }
 
     // Update the state
+    // (This will be null if there are upcoming events, but just not for today)
     setState(() {
       _activeHeadsUpEvent = eventForToday;
     });
@@ -3079,7 +3151,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 : (_activeHeadsUpEvent != null &&
                         !_isNavigating &&
                         !_isItineraryRouteVisible)
-                    ? (paddingTop + 175) // Pushed down by heads-up card
+                    ? (paddingTop + 185) // Pushed down by heads-up card
                     : (paddingTop + 70), // Default position
             // ⭐️ --- END OF NEW LOGIC --- ⭐️
             right: 12,
@@ -3116,8 +3188,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         children: [
                           // User Profile Button
                           _buildProfileButton(
-                            onPressed: () {
-                              showModalBottomSheet(
+                            onPressed: () async {
+                              // 1. Make it async
+                              // 2. Await the result
+                              final result = await showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: true,
                                 backgroundColor: Colors.white,
@@ -3135,6 +3209,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   },
                                 ),
                               );
+
+                              // 3. --- ADD THIS BLOCK ---
+                              // After the profile menu closes, reload the map style
+                              final prefs =
+                                  await SharedPreferences.getInstance();
+                              final styleName =
+                                  prefs.getString('mapStyle') ?? 'tourism.json';
+                              _setMapStyle(styleName);
+                              // --- END OF ADDITION ---
+
+                              // 4. (This is your existing logic for POI clicks)
+                              if (result is Map<String, dynamic>) {
+                                _showPoiSheet(
+                                  name: result['name'] ?? 'Unnamed',
+                                  description: result['description'] ?? '',
+                                  data: result,
+                                );
+                              }
                             },
                           ),
                           // Dropdown filter
@@ -3305,9 +3397,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         duration: const Duration(milliseconds: 250),
                         transitionBuilder: (child, animation) =>
                             ScaleTransition(scale: animation, child: child),
+
+                        // --- START OF MODIFICATION ---
+                        // 1. Removed the _buildMapStyleButton() call
                         child: _currentTransportRouteData == null
-                            ? _buildMapStyleButton()
+                            ? const SizedBox
+                                .shrink() // Was _buildMapStyleButton()
                             : const SizedBox.shrink(),
+                        // --- END OF MODIFICATION ---
                       ),
                   ],
                 ),
@@ -3843,45 +3940,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // REPLACE your _buildMapStyleButton with this
-  Widget _buildMapStyleButton() {
-    return Container(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.25),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: CircleAvatar(
-        backgroundColor: Colors.white,
-        radius: 24,
-        child: PopupMenuButton<String>(
-          icon: const Icon(Icons.layers, color: Colors.black87),
-          onSelected: (value) {
-            switch (value) {
-              case 'Default':
-                _setMapStyle('map_style.json');
-                break;
-              case 'Clean':
-                _setMapStyle('clean.json');
-                break;
-              case 'Tourism':
-                _setMapStyle('tourism.json');
-                break;
-            }
-          },
-          itemBuilder: (context) => const [
-            PopupMenuItem(value: 'Default', child: Text('Default')),
-            PopupMenuItem(value: 'Clean', child: Text('Clean')),
-            PopupMenuItem(value: 'Tourism', child: Text('Tourism')),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildLiveNavigationUI() {
     return Stack(
@@ -4433,58 +4491,119 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Widget _buildHeadsUpCard(DocumentSnapshot eventDoc) {
     final event = eventDoc.data() as Map<String, dynamic>;
     final eventTime = (event['eventTime'] as Timestamp).toDate();
-    final String eventName = event['destinationPoiName'] ?? 'Event';
-    final String itineraryName = event['itineraryName'] ?? 'Active Trip';
+    final String eventName = event['destinationPoiName'] ?? 'Your Event';
+    final String itineraryName =
+        _activeItineraryName ?? 'Your Active Trip'; // Use the state variable
     final String timeAgo = timeago.format(eventTime);
+    final String specificTime =
+        DateFormat.jm().format(eventTime); // e.g., "10:30 AM"
 
     return Positioned(
       top: MediaQuery.of(context).padding.top + 70, // Below the search bar
       left: 12,
       right: 12,
-      child: Card(
-        elevation: 8,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              colors: [
-                Theme.of(context).primaryColor,
-                Theme.of(context).primaryColor.withAlpha(220),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 20,
-              vertical: 10,
-            ),
-            leading: const Icon(
-              Icons.notifications_active,
-              color: Colors.white,
-              size: 30,
-            ),
-            title: Text(
-              'Up Next: $eventName',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-                fontSize: 18,
+      // 2. WRAP THE CARD IN AN INKWELL TO MAKE IT CLICKABLE
+      child: InkWell(
+        onTap: () {
+          // 3. ADD THE NAVIGATION LOGIC
+          if (_activeItineraryId != null && _activeItineraryName != null) {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => ItineraryDetailScreen(
+                  itineraryId: _activeItineraryId!,
+                  itineraryName: _activeItineraryName!,
+                ),
+              ),
+            );
+          }
+        },
+        borderRadius: BorderRadius.circular(16), // Match card shape
+        child: Card(
+          elevation: 8,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          clipBehavior: Clip.antiAlias, // Ensures gradient respects border
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Theme.of(context).primaryColor,
+                  Theme.of(context).primaryColor.withAlpha(230),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
             ),
-            subtitle: Text(
-              'From: $itineraryName • ($timeAgo)',
-              style: const TextStyle(color: Colors.white70),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 12.0,
+              ),
+              child: Row(
+                children: [
+                  // 1. CHANGED THE ICON
+                  const Icon(
+                    Icons.notifications_active,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  // Revamped Text Column
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          eventName, // Event Name is now the title
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            fontSize: 18,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          "at $specificTime ($timeAgo)", // Specific time + timeago
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        // Itinerary Name Chip
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            "From: $itineraryName",
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Close Button
+                  // This IconButton will still capture its own taps
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: _showClearActiveTripDialog,
+                    tooltip: 'Clear active trip',
+                  ),
+                ],
+              ),
             ),
-            // ⭐️ --- ADD THIS TRAILING WIDGET --- ⭐️
-            trailing: IconButton(
-              icon: const Icon(Icons.close, color: Colors.white),
-              onPressed: _showClearActiveTripDialog,
-              tooltip: 'Clear active trip',
-            ),
-            // ⭐️ --- END OF ADDITION --- ⭐️
           ),
         ),
       ),

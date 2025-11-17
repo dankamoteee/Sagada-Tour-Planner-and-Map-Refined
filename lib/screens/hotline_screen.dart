@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
+// ⭐️ --- ADD THIS IMPORT --- ⭐️
+import 'package:cached_network_image/cached_network_image.dart';
 
 // 1. The Data Model for your Hotline
 // This makes your code cleaner and safer than using raw Maps.
 class Hotline {
   final String agencyName;
-  final String imageUrl; // This will hold the base64 string
+  final String imageUrl; // This will hold the base64 string OR a URL
   final String phone;
   final String address;
 
@@ -61,10 +63,9 @@ class _HotlineScreenState extends State<HotlineScreen> {
       int savedCount = 0;
       for (var hotline in _allHotlines) {
         try {
-          final newContact =
-              Contact()
-                ..name.first = hotline.agencyName
-                ..phones = [Phone(hotline.phone)];
+          final newContact = Contact()
+            ..name.first = hotline.agencyName
+            ..phones = [Phone(hotline.phone)];
 
           await newContact.insert();
           savedCount++;
@@ -164,31 +165,30 @@ class _HotlineScreenState extends State<HotlineScreen> {
               // 2. The List of Hotline Cards (now using the state variable)
               _allHotlines.isEmpty
                   ? SliverFillRemaining(
-                    child: const Center(
-                      child: Text('No hotline numbers found.'),
-                    ),
-                  )
+                      child: const Center(
+                        child: Text('No hotline numbers found.'),
+                      ),
+                    )
                   : SliverList.builder(
-                    itemCount: _allHotlines.length,
-                    itemBuilder: (context, index) {
-                      return HotlineCard(hotline: _allHotlines[index]);
-                    },
-                  ),
+                      itemCount: _allHotlines.length,
+                      itemBuilder: (context, index) {
+                        return HotlineCard(hotline: _allHotlines[index]);
+                      },
+                    ),
             ],
           );
         },
       ),
       // --- ADD THIS FLOATING ACTION BUTTON ---
-      floatingActionButton:
-          _allHotlines.isNotEmpty
-              ? FloatingActionButton.extended(
-                onPressed: _saveAllContacts,
-                label: const Text('Save All to Contacts'),
-                icon: const Icon(Icons.contact_phone),
-                backgroundColor: const Color(0xFF3A6A55),
-                foregroundColor: const Color.fromARGB(255, 255, 255, 255),
-              )
-              : null, // Hide the button if there are no hotlines
+      floatingActionButton: _allHotlines.isNotEmpty
+          ? FloatingActionButton.extended(
+              onPressed: _saveAllContacts,
+              label: const Text('Save All to Contacts'),
+              icon: const Icon(Icons.contact_phone),
+              backgroundColor: const Color(0xFF3A6A55),
+              foregroundColor: const Color.fromARGB(255, 255, 255, 255),
+            )
+          : null, // Hide the button if there are no hotlines
     );
   }
 }
@@ -210,6 +210,7 @@ class HotlineCard extends StatelessWidget {
     }
   }
 
+  // ⭐️ --- KEEP THIS HELPER FUNCTION --- ⭐️
   // Helper to decode the base64 image string
   Uint8List? _decodeBase64Image(String base64String) {
     try {
@@ -223,13 +224,49 @@ class HotlineCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final imageBytes = _decodeBase64Image(hotline.imageUrl);
+    // --- START OF MODIFICATION (HYBRID LOGIC) ---
+    // Define the CircleAvatar first
+    CircleAvatar logoAvatar;
+
+    if (hotline.imageUrl.startsWith('data:image')) {
+      // Case 1: It's a Base64 string
+      final imageBytes = _decodeBase64Image(hotline.imageUrl);
+      logoAvatar = CircleAvatar(
+        radius: 30,
+        backgroundColor: Colors.grey.shade200,
+        child: imageBytes != null
+            ? ClipOval(
+                child: Image.memory(
+                  imageBytes,
+                  fit: BoxFit.cover,
+                  width: 60,
+                  height: 60,
+                ),
+              )
+            : const Icon(Icons.business, color: Colors.grey),
+      );
+    } else if (hotline.imageUrl.startsWith('http')) {
+      // Case 2: It's a web URL
+      logoAvatar = CircleAvatar(
+        radius: 30,
+        backgroundColor: Colors.grey.shade200,
+        backgroundImage: CachedNetworkImageProvider(hotline.imageUrl),
+      );
+    } else {
+      // Case 3: It's empty or a fallback
+      logoAvatar = CircleAvatar(
+        radius: 30,
+        backgroundColor: Colors.grey.shade200,
+        child: const Icon(Icons.business, color: Colors.grey),
+      );
+    }
+    // --- END OF MODIFICATION ---
 
     // Using ListTile provides excellent, consistent padding and alignment
     return Card(
       elevation: 3,
-      clipBehavior:
-          Clip.antiAlias, // Ensures InkWell ripple stays within the rounded corners
+      clipBehavior: Clip
+          .antiAlias, // Ensures InkWell ripple stays within the rounded corners
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
         onTap: () => _makePhoneCall(hotline.phone, context),
@@ -238,22 +275,8 @@ class HotlineCard extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Left Side: Logo
-              CircleAvatar(
-                radius: 30,
-                backgroundColor: Colors.grey.shade200,
-                child:
-                    imageBytes != null
-                        ? ClipOval(
-                          child: Image.memory(
-                            imageBytes,
-                            fit: BoxFit.cover,
-                            width: 60,
-                            height: 60,
-                          ),
-                        )
-                        : const Icon(Icons.business, color: Colors.grey),
-              ),
+              // Left Side: Logo (now uses our hybrid widget)
+              logoAvatar,
               const SizedBox(width: 16),
 
               // Middle: Agency Name, Phone, and Address

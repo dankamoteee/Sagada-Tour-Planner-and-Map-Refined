@@ -5,6 +5,7 @@ import '../screens/recently_viewed_screen.dart';
 import '../screens/hotline_screen.dart';
 import '../screens/tour_guides_screen.dart';
 import '../screens/itineraries_list_screen.dart';
+import '../screens/guidelines_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 class ProfileMenu extends StatelessWidget {
@@ -31,13 +32,33 @@ class ProfileMenu extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           child: Column(
             children: [
-              Align(
-                alignment: Alignment.topLeft,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => Navigator.pop(context),
-                ),
+              // --- START OF MODIFICATION ---
+              // 1. Replaced Align with a Row to hold both buttons
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Left side: Back Button
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  // Right side: New Guidelines Button
+                  IconButton(
+                    icon: const Icon(Icons.info_outlined),
+                    tooltip: "Guidelines",
+                    onPressed: () {
+                      // DO NOT pop. Just push the new screen.
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const GuidelinesScreen(),
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
+              // --- END OF MODIFICATION ---
               const SizedBox(height: 40),
               Text(
                 userName,
@@ -52,9 +73,9 @@ class ProfileMenu extends StatelessWidget {
 
               // Updated "Profile" button to navigate correctly
               _buildImageButton("Profile", "assets/images/profile_bg.png", () {
-                Navigator.pop(context); // Close sheet before navigating
+                // DO NOT pop.
                 if (userId != null && userData != null) {
-                  // Check if userData is not null
+                  // Just push the new screen.
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -70,10 +91,8 @@ class ProfileMenu extends StatelessWidget {
                 "My Itinerary",
                 "assets/images/itinerary_bg.png",
                 () async {
-                  // Close the menu first
-                  Navigator.of(context).pop();
-
-                  // Navigate to the itinerary screen
+                  // DO NOT pop.
+                  // Just push the new screen and await the result.
                   final result = await Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (context) => const ItinerariesListScreen(),
@@ -82,29 +101,39 @@ class ProfileMenu extends StatelessWidget {
 
                   // Handle the returned result
                   if (result is Map<String, dynamic>) {
+                    // NOW pop the menu and send the data back
+                    Navigator.pop(context); // Close sheet
                     onDrawItinerary(result); // Call your callback function
                   }
+                  // If no result, do nothing. User is still on the profile menu.
                 },
               ),
               _buildImageButton(
                 "Recently Viewed",
                 "assets/images/recent_bg.png",
-                () {
-                  Navigator.pop(context); // Close the menu
-                  // Navigate to the new screen
-                  Navigator.push(
+                () async {
+                  // DO NOT pop.
+                  // Just push the new screen and await the result
+                  final result = await Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (context) => const RecentlyViewedScreen(),
                     ),
                   );
+
+                  // Check if we got POI data back
+                  if (result is Map<String, dynamic>) {
+                    // NOW pop the menu AND pass the data back to the map
+                    Navigator.pop(context, result);
+                  }
+                  // If no result, do nothing. User is still on the profile menu.
                 },
               ),
               _buildImageButton(
                 "Tour Guides",
                 "assets/images/tourguide_bg.png",
                 () {
-                  Navigator.pop(context); // Close the menu
+                  // DO NOT pop. Just push the new screen.
                   Navigator.push(
                     // Navigate to the new screen
                     context,
@@ -118,9 +147,7 @@ class ProfileMenu extends StatelessWidget {
                 "Sagada Hotline Numbers",
                 "assets/images/hotline_bg.png",
                 () {
-                  // First, close the profile menu
-                  Navigator.pop(context);
-                  // Then, navigate to the HotlineScreen
+                  // DO NOT pop. Just push the new screen.
                   Navigator.push(
                     context,
                     MaterialPageRoute(

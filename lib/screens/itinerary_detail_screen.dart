@@ -115,6 +115,59 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
     });
   }
 
+  Widget _buildPreTourChecklist() {
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12.0, 12.0, 12.0, 0),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Pre-Tour Checklist",
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).primaryColor,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _buildChecklistItem(
+              context,
+              Icons.app_registration,
+              "Register at the Municipal Tourism Office.",
+            ),
+            const SizedBox(height: 8),
+            _buildChecklistItem(
+              context,
+              Icons.person_search,
+              "Confirm which sites require an accredited guide.",
+            ),
+            const SizedBox(height: 8),
+            _buildChecklistItem(
+              context,
+              Icons.eco,
+              "Practice 'Leave No Trace' principles.",
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ⭐️ --- ADDED THIS HELPER WIDGET --- ⭐️
+  /// Helper for a single checklist item.
+  Widget _buildChecklistItem(BuildContext context, IconData icon, String text) {
+    return Row(
+      children: [
+        Icon(icon, color: Colors.grey.shade700, size: 20),
+        const SizedBox(width: 12),
+        Expanded(child: Text(text)),
+      ],
+    );
+  }
+
   Future<void> _deleteEvent(String eventId) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -525,221 +578,242 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
             ),
           ],
         ),
-        body: StreamBuilder<QuerySnapshot>(
-          stream: stream,
-          builder: (context, snapshot) {
-            if (snapshot.hasData && _currentEventId == null && !_isToday) {
-              _findCurrentEvent();
-            }
+        body: Column(
+          children: [
+            // 1. ADD THE PRE-TOUR CHECKLIST WIDGET HERE
+            _buildPreTourChecklist(),
 
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-              return const Center(
-                child: Text('No plans yet. Add your first event!'),
-              );
-            }
+            // 2. WRAP THE STREAMBUILDER IN AN EXPANDED
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: stream,
+                builder: (context, snapshot) {
+                  if (snapshot.hasData &&
+                      _currentEventId == null &&
+                      !_isToday) {
+                    _findCurrentEvent();
+                  }
 
-            final Map<DateTime, List<DocumentSnapshot>> eventsByDate = {};
-            for (var doc in snapshot.data!.docs) {
-              final eventTime = (doc['eventTime'] as Timestamp).toDate();
-              final dateKey = DateTime(
-                eventTime.year,
-                eventTime.month,
-                eventTime.day,
-              );
-
-              if (!eventsByDate.containsKey(dateKey)) {
-                eventsByDate[dateKey] = [];
-              }
-              eventsByDate[dateKey]!.add(doc);
-            }
-
-            for (var day in eventsByDate.keys) {
-              eventsByDate[day]!.sort((a, b) {
-                final aTime = (a.data() as Map<String, dynamic>)['eventTime']
-                    as Timestamp;
-                final bTime = (b.data() as Map<String, dynamic>)['eventTime']
-                    as Timestamp;
-                return aTime.compareTo(bTime);
-              });
-            }
-
-            final sortedDates = eventsByDate.keys.toList()..sort();
-
-            final now = DateTime.now();
-
-            return ListView.builder(
-              itemCount: sortedDates.length,
-              itemBuilder: (context, index) {
-                final date = sortedDates[index];
-                final events = eventsByDate[date]!;
-                final dayNumber = index + 1;
-
-                final bool isForToday = _isSameDay(date, now);
-
-                final List<Widget> dayWidgets = [];
-                for (int i = 0; i < events.length; i++) {
-                  final eventDoc = events[i];
-                  final bool isCurrent =
-                      isForToday && eventDoc.id == _currentEventId;
-
-                  dayWidgets.add(_buildEventItem(
-                    eventDoc,
-                    isCurrent: isCurrent,
-                  ));
-
-                  if (i < events.length - 1) {
-                    final nextEventDoc = events[i + 1];
-                    dayWidgets.add(
-                      _TravelTimeWidget(
-                        key: ValueKey("${eventDoc.id}-${nextEventDoc.id}"),
-                        eventA: eventDoc,
-                        eventB: nextEventDoc,
-                      ),
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                    return const Center(
+                      child: Text('No plans yet. Add your first event!'),
                     );
                   }
-                }
 
-                return Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8.0,
-                                vertical: 12.0,
-                              ),
-                              child: Row(
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      'Day $dayNumber - ${DateFormat.yMMMEd().format(date)}',
-                                      style: const TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                  if (isForToday)
-                                    Container(
-                                      margin: const EdgeInsets.only(left: 8),
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 8, vertical: 4),
-                                      decoration: BoxDecoration(
-                                        color: Theme.of(context).primaryColor,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: const Text(
-                                        'TODAY',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    )
-                                ],
-                              ),
+                  // ... (rest of your StreamBuilder logic is unchanged) ...
+                  final Map<DateTime, List<DocumentSnapshot>> eventsByDate = {};
+                  for (var doc in snapshot.data!.docs) {
+                    final eventTime = (doc['eventTime'] as Timestamp).toDate();
+                    final dateKey = DateTime(
+                      eventTime.year,
+                      eventTime.month,
+                      eventTime.day,
+                    );
+
+                    if (!eventsByDate.containsKey(dateKey)) {
+                      eventsByDate[dateKey] = [];
+                    }
+                    eventsByDate[dateKey]!.add(doc);
+                  }
+
+                  for (var day in eventsByDate.keys) {
+                    eventsByDate[day]!.sort((a, b) {
+                      final aTime = (a.data()
+                          as Map<String, dynamic>)['eventTime'] as Timestamp;
+                      final bTime = (b.data()
+                          as Map<String, dynamic>)['eventTime'] as Timestamp;
+                      return aTime.compareTo(bTime);
+                    });
+                  }
+
+                  final sortedDates = eventsByDate.keys.toList()..sort();
+
+                  final now = DateTime.now();
+
+                  return ListView.builder(
+                    padding: const EdgeInsets.only(
+                        top: 8.0), // Add padding to separate from checklist
+                    itemCount: sortedDates.length,
+                    itemBuilder: (context, index) {
+                      // ... (rest of your ListView.builder logic is unchanged) ...
+                      final date = sortedDates[index];
+                      final events = eventsByDate[date]!;
+                      final dayNumber = index + 1;
+
+                      final bool isForToday = _isSameDay(date, now);
+
+                      final List<Widget> dayWidgets = [];
+                      for (int i = 0; i < events.length; i++) {
+                        final eventDoc = events[i];
+                        final bool isCurrent =
+                            isForToday && eventDoc.id == _currentEventId;
+
+                        dayWidgets.add(_buildEventItem(
+                          eventDoc,
+                          isCurrent: isCurrent,
+                        ));
+
+                        if (i < events.length - 1) {
+                          final nextEventDoc = events[i + 1];
+                          dayWidgets.add(
+                            _TravelTimeWidget(
+                              key:
+                                  ValueKey("${eventDoc.id}-${nextEventDoc.id}"),
+                              eventA: eventDoc,
+                              eventB: nextEventDoc,
                             ),
-                          ),
-                          TextButton.icon(
-                            icon: const Icon(Icons.map_outlined),
-                            label: const Text('Show on Map'),
-                            onPressed: () async {
-                              if (events.length < 2) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'You need at least 2 events on this day to show a route.',
+                          );
+                        }
+                      }
+
+                      return Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8.0,
+                                      vertical: 12.0,
                                     ),
-                                    backgroundColor: Colors.blueGrey,
+                                    child: Row(
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            'Day $dayNumber - ${DateFormat.yMMMEd().format(date)}',
+                                            style: const TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                        if (isForToday)
+                                          Container(
+                                            margin:
+                                                const EdgeInsets.only(left: 8),
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Theme.of(context)
+                                                  .primaryColor,
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            ),
+                                            child: const Text(
+                                              'TODAY',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          )
+                                      ],
+                                    ),
                                   ),
-                                );
-                                return;
-                              }
-                              showDialog(
-                                context: context,
-                                barrierDismissible: false,
-                                builder: (context) => const Center(
-                                  child: CircularProgressIndicator(),
                                 ),
-                              );
-                              // ⭐️ --- START OF MODIFICATION --- ⭐️
-                              final List<Map<String, dynamic>> eventDetails =
-                                  [];
-                              for (final eventDoc in events) {
-                                final event =
-                                    eventDoc.data() as Map<String, dynamic>;
-                                final poiId =
-                                    event['destinationPoiId'] as String?;
-
-                                GeoPoint? coords; // We'll store this here
-
-                                if (poiId != null) {
-                                  final poiDoc = await FirebaseFirestore
-                                      .instance
-                                      .collection('POIs')
-                                      .doc(poiId)
-                                      .get();
-                                  if (poiDoc.exists) {
-                                    final poiData = poiDoc.data()!;
-                                    final dynamic coordsData =
-                                        poiData['coordinates'];
-
-                                    if (coordsData is GeoPoint) {
-                                      coords = coordsData;
-                                    } else if (coordsData is Map) {
-                                      coords = GeoPoint(
-                                        coordsData['latitude'] ?? 0.0,
-                                        coordsData['longitude'] ?? 0.0,
+                                TextButton.icon(
+                                  icon: const Icon(Icons.map_outlined),
+                                  label: const Text('Show on Map'),
+                                  onPressed: () async {
+                                    if (events.length < 2) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'You need at least 2 events on this day to show a route.',
+                                          ),
+                                          backgroundColor: Colors.blueGrey,
+                                        ),
                                       );
+                                      return;
                                     }
-                                  }
-                                }
+                                    showDialog(
+                                      context: context,
+                                      barrierDismissible: false,
+                                      builder: (context) => const Center(
+                                        child: CircularProgressIndicator(),
+                                      ),
+                                    );
+                                    // ⭐️ --- START OF MODIFICATION --- ⭐️
+                                    final List<Map<String, dynamic>>
+                                        eventDetails = [];
+                                    for (final eventDoc in events) {
+                                      final event = eventDoc.data()
+                                          as Map<String, dynamic>;
+                                      final poiId =
+                                          event['destinationPoiId'] as String?;
 
-                                // Add all event details to our list
-                                eventDetails.add({
-                                  'name': event['destinationPoiName'] ??
-                                      'Custom Event',
-                                  'time': event['eventTime'] as Timestamp,
-                                  'coordinates':
-                                      coords, // Can be null for custom events
-                                });
-                              }
+                                      GeoPoint? coords; // We'll store this here
 
-                              // Create the new data object to send back
-                              final Map<String, dynamic> itineraryMap = {
-                                'title': widget.itineraryName,
-                                'events': eventDetails,
-                              };
+                                      if (poiId != null) {
+                                        final poiDoc = await FirebaseFirestore
+                                            .instance
+                                            .collection('POIs')
+                                            .doc(poiId)
+                                            .get();
+                                        if (poiDoc.exists) {
+                                          final poiData = poiDoc.data()!;
+                                          final dynamic coordsData =
+                                              poiData['coordinates'];
 
-                              if (context.mounted)
-                                Navigator.pop(context); // Pop loading
-                              if (context.mounted) {
-                                // Pop back with the new map, not the coordinate list
-                                Navigator.pop(context, itineraryMap);
-                              }
-                              // ⭐️ --- END OF MODIFICATION --- ⭐️
-                            },
-                          ),
-                        ],
-                      ),
-                      Column(
-                        children: dayWidgets,
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
-          },
+                                          if (coordsData is GeoPoint) {
+                                            coords = coordsData;
+                                          } else if (coordsData is Map) {
+                                            coords = GeoPoint(
+                                              coordsData['latitude'] ?? 0.0,
+                                              coordsData['longitude'] ?? 0.0,
+                                            );
+                                          }
+                                        }
+                                      }
+
+                                      // Add all event details to our list
+                                      eventDetails.add({
+                                        'name': event['destinationPoiName'] ??
+                                            'Custom Event',
+                                        'time': event['eventTime'] as Timestamp,
+                                        'coordinates':
+                                            coords, // Can be null for custom events
+                                      });
+                                    }
+
+                                    // Create the new data object to send back
+                                    final Map<String, dynamic> itineraryMap = {
+                                      'title': widget.itineraryName,
+                                      'events': eventDetails,
+                                    };
+
+                                    if (context.mounted)
+                                      Navigator.pop(context); // Pop loading
+                                    if (context.mounted) {
+                                      // Pop back with the new map, not the coordinate list
+                                      Navigator.pop(context, itineraryMap);
+                                    }
+                                    // ⭐️ --- END OF MODIFICATION --- ⭐️
+                                  },
+                                ),
+                              ],
+                            ),
+                            Column(
+                              children: dayWidgets,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
         floatingActionButton: FloatingActionButton(
           onPressed: () {
