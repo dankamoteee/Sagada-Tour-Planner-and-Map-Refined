@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // <-- IMPORT FIRESTORE
-import 'facebook_login_screen.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
+
+// 1. ADD "as google_sign_in_pkg" TO FIX THE NAMING CONFLICT
+import 'package:google_sign_in/google_sign_in.dart';
+
 import 'forgot_password.dart';
 import 'gradient_background.dart';
 import 'map_homescreen.dart';
 import 'register_screen.dart';
 import 'terms_screen.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-// We no longer go to VerifyEmailScreen from here, we go to the choice screen
-import 'verification_choice_screen.dart'; // <-- IMPORT NEW SCREEN
+import 'verification_choice_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -19,34 +22,213 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  bool _obscurePassword = true;
-  bool _isLoading = false;
-
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  // ⭐️ --- MODIFIED FACEBOOK SIGN-IN --- ⭐️
+  Future<void> _signInWithFacebook() async {
+    setState(() => _isLoading = true);
+    try {
+      final LoginResult result = await FacebookAuth.instance.login(
+        permissions: ['public_profile', 'email'],
+        loginBehavior: LoginBehavior.webOnly,
+      );
+
+      if (result.status == LoginStatus.success) {
+        final userData = await FacebookAuth.instance.getUserData(
+          fields: "name,email,picture.width(500).height(500)",
+        );
+        final AccessToken accessToken = result.accessToken!;
+        final OAuthCredential credential =
+            FacebookAuthProvider.credential(accessToken.tokenString);
+        final UserCredential userCredential =
+            await FirebaseAuth.instance.signInWithCredential(credential);
+        final User? user = userCredential.user;
+
+        if (user != null) {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+
+          final String photoUrl = userData['picture']?['data']?['url'] ?? "";
+
+          if (!userDoc.exists) {
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(user.uid)
+                .set({
+              'email': userData['email'],
+              'fullName': userData['name'],
+              'profilePictureUrl': photoUrl,
+              'createdAt': FieldValue.serverTimestamp(),
+              'role': 'tourist',
+              'isVerified': true,
+            });
+          } else {
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(user.uid)
+                .update({
+              'lastLogin': FieldValue.serverTimestamp(),
+              'fullName': userData['name'],
+              'profilePictureUrl': photoUrl,
+              'isVerified': true,
+            });
+          }
+
+          if (mounted) {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (context) => const MapScreen()),
+              (route) => false,
+            );
+          }
+        }
+      } else if (result.status == LoginStatus.cancelled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Facebook login cancelled')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Facebook login failed: ${result.message}')),
+          );
+        }
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Firebase Error: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // ⭐️ --- MODIFIED GOOGLE SIGN-IN --- ⭐️
+  Future<void> _signInWithGoogle() async {
+    setState(() => _isLoading = true);
+    try {
+      // ⭐️ FIX 1: You must call initialize() before anything else.
+      // We pass the serverClientId for Firebase integration.
+      await GoogleSignIn.instance.initialize(
+        serverClientId:
+            "358935174408-naetj061kk73u7fv92t5t5jmv7sv6e3f.apps.googleusercontent.com", // 👈 See note below
+      );
+
+      // ⭐️ FIX 2: The method is now authenticate(), not signIn()
+      final GoogleSignInAccount? googleUser =
+          await GoogleSignIn.instance.authenticate();
+
+      if (googleUser == null) {
+        // The user canceled the sign-in
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+
+      // 2. Obtain auth details from the request
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      // 3. Create a new Firebase credential
+      // ⭐️ FIX 3: Only use idToken. accessToken is no longer available here.
+      final OAuthCredential credential = GoogleAuthProvider.credential(
+        idToken: googleAuth.idToken,
+      );
+
+      // 4. Sign in to Firebase with the credential
+      final UserCredential userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
+
+      final User? user = userCredential.user;
+
+      if (user != null) {
+        // 5. Check if user is new and save to Firestore
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+
+        if (!userDoc.exists) {
+          // New user, create the document
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .set({
+            'email': user.email,
+            'fullName': user.displayName,
+            'profilePictureUrl': user.photoURL ?? "",
+            'createdAt': FieldValue.serverTimestamp(),
+            'role': 'tourist',
+            'isVerified': true,
+          });
+        } else {
+          // Existing user, update their info
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .update({
+            'lastLogin': FieldValue.serverTimestamp(),
+            'fullName': user.displayName,
+            'profilePictureUrl': user.photoURL ?? "",
+            'isVerified': true,
+          });
+        }
+
+        if (mounted) {
+          // Navigate to the map screen
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (context) => const MapScreen()),
+            (route) => false,
+          );
+        }
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Firebase Error: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Google login error: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   @override
   void dispose() {
-    // Clean up the controllers when the widget is disposed.
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
-  // --- THIS IS THE FULLY UPDATED FUNCTION ---
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) {
-      return; // If validation fails, do nothing.
+      return;
     }
-
-    // --- Store context-dependent objects BEFORE await ---
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
-    // ----------------------------------------------------
-
     setState(() => _isLoading = true);
 
     try {
@@ -56,25 +238,19 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (!mounted) return;
-
       final user = userCredential.user;
 
       if (user != null) {
-        // --- THIS IS THE NEW LOGIC ---
-        // 1. Get the user's document from Firestore
         final userDoc = await FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
             .get();
 
         if (!mounted) return;
-
-        // Check if the document exists and get the verification status
         final bool isVerified =
             userDoc.exists && (userDoc.data()?['isVerified'] ?? false);
 
         if (!isVerified) {
-          // 3. If NOT verified, send to verification choice
           final phone = userDoc.data()?['phone'] ?? '';
           navigator.pushReplacement(
             MaterialPageRoute(
@@ -91,32 +267,23 @@ class _LoginScreenState extends State<LoginScreen> {
               backgroundColor: Colors.orange,
             ),
           );
-          return; // Stop execution
+          return;
         }
-
-        // --- ⭐️ THIS IS THE FIX ⭐️ ---
-        // 4. If user IS verified, check if they have accepted terms
         final prefs = await SharedPreferences.getInstance();
         final acceptedTerms = prefs.getBool('accepted_terms') ?? false;
 
         if (acceptedTerms) {
-          // 5. VERIFIED + ACCEPTED TERMS = GO TO MAP
-          // This skips the splash, terms, and pfp screens
           navigator.pushAndRemoveUntil(
             MaterialPageRoute(builder: (context) => const MapScreen()),
-            (route) => false, // This clears all screens behind it
+            (route) => false,
           );
         } else {
-          // 6. VERIFIED + NOT ACCEPTED TERMS = GO TO TERMS
-          // This is for users who verified but quit before terms/pfp
           navigator.pushReplacement(
             MaterialPageRoute(
                 builder: (context) => const TermsAgreementScreen()),
           );
         }
-        // --- ⭐️ END OF FIX ⭐️ ---
-
-        return; // We're done, exit the function
+        return;
       }
     } on FirebaseAuthException catch (e) {
       String message;
@@ -162,7 +329,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               child: IntrinsicHeight(
                 child: Form(
-                  key: _formKey, // Assign the key
+                  key: _formKey,
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Column(
@@ -202,7 +369,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             if (value == null || value.trim().isEmpty) {
                               return 'Please enter your email';
                             }
-                            return null; // null means it's valid
+                            return null;
                           },
                         ),
                         const SizedBox(height: 16),
@@ -232,7 +399,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             if (value == null || value.isEmpty) {
                               return 'Please enter your password';
                             }
-                            return null; // null means it's valid
+                            return null;
                           },
                         ),
                         const SizedBox(height: 8),
@@ -303,15 +470,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 30),
                         ElevatedButton.icon(
-                          onPressed: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const FacebookLoadingScreen(),
-                              ),
-                            );
-                          },
+                          onPressed: _isLoading ? null : _signInWithFacebook,
                           icon: const Icon(Icons.facebook, color: Colors.white),
                           label: const Text('Login with Facebook'),
                           style: ElevatedButton.styleFrom(
@@ -333,17 +492,22 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 30),
                         ElevatedButton.icon(
-                          onPressed: () {
-                            // TODO: Login with Google
-                          },
-                          icon: const Icon(
-                            Icons.g_mobiledata_outlined,
-                            color: Colors.white,
+                          onPressed: _isLoading ? null : _signInWithGoogle,
+                          icon: Image.asset(
+                            'assets/images/google_logo.png',
+                            height: 24.0,
+                            width: 24.0,
+                            // Fallback for the image if it doesn't load
+                            errorBuilder: (context, error, stackTrace) =>
+                                const Icon(Icons.g_mobiledata,
+                                    color: Color.fromARGB(255, 255, 255, 255)),
                           ),
                           label: const Text('Login with Google'),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFF44336),
-                            foregroundColor: Colors.white,
+                            backgroundColor:
+                                const Color.fromARGB(255, 234, 68, 53),
+                            foregroundColor:
+                                const Color.fromARGB(255, 255, 255, 255),
                             padding: const EdgeInsets.symmetric(
                               horizontal: 24,
                               vertical: 12,

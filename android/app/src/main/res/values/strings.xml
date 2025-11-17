@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sagada Tour Planner and Map</string>
+    <!-- Replace with your actual App ID -->
+    <string name="facebook_app_id">1771233817602207</string>
+    <!-- Replace with your actual Client Token -->
+    <string name="facebook_client_token">5285e7b3d71d5bc145f93fb0ed22e343</string>
+    <string name="fb_login_protocol_scheme">fb1771233817602207</string>
+</resources>
