@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 // A simple model to hold our POIs for the dropdown
 class PoiStub {
@@ -23,7 +24,7 @@ class RouteGeneratorPage extends StatefulWidget {
 class _RouteGeneratorPageState extends State<RouteGeneratorPage> {
   // ⭐️ --- IMPORTANT: ADD YOUR API KEY HERE --- ⭐️
   // This key must have the "Directions API" enabled in your Google Cloud console
-  final String _googleMapsApiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI";
+  final String _googleMapsApiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
