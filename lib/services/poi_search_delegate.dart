@@ -49,6 +49,7 @@ Poi _safePoiFromFirestore(DocumentSnapshot doc) {
     coordinates: coordinates,
     primaryImage: data['primaryImage'] as String?,
     images: images,
+    legacyImageUrl: data['imageUrl'] as String?,
     openingHours: data['openingHours'] as String?,
     contactNumber: data['contactNumber'] as String?,
     status: data['status'] as String?,

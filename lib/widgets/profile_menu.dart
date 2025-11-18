@@ -46,14 +46,22 @@ class ProfileMenu extends StatelessWidget {
                   IconButton(
                     icon: const Icon(Icons.info_outlined),
                     tooltip: "Guidelines",
-                    onPressed: () {
-                      // DO NOT pop. Just push the new screen.
-                      Navigator.push(
+                    onPressed: () async {
+                      // 1. Make async
+                      // 2. Await result
+                      final result = await Navigator.push(
                         context,
                         MaterialPageRoute(
                           builder: (context) => const GuidelinesScreen(),
                         ),
                       );
+
+                      // 3. Check if it's an action
+                      if (result is Map<String, dynamic> &&
+                          result['action'] == 'filter') {
+                        // 4. Pop ProfileMenu and send filter back to Map
+                        Navigator.pop(context, result);
+                      }
                     },
                   ),
                 ],

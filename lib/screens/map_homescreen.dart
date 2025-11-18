@@ -28,6 +28,7 @@ import 'package:html_unescape/html_unescape.dart'; // 👈 ADD THIS (for cleanin
 import 'package:maps_toolkit/maps_toolkit.dart' as map_tools;
 import 'guidelines_screen.dart';
 import 'itinerary_detail_screen.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 // Enum to manage the panel's visibility state
 enum NavigationPanelState { hidden, minimized, expanded }
@@ -119,6 +120,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     'Accommodations',
     'Transport Terminals',
     'Agencies and Offices',
+    'Services', // <-- ADD THIS (for ATMs)
+    'Parking', // <-- ADD THIS
   ];
   String _selectedFilter = 'All';
 
@@ -290,7 +293,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     _endNavigation();
 
-    final String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI";
+    final String apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
     final LatLng origin = LatLng(
       coordinates.first.latitude,
@@ -604,7 +607,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _lastDestination = destination;
 
     // 1. GET THE ROUTE DATA USING YOUR EXISTING HTTP METHOD
-    final String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"; // Your key
+    final String apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? ''; // Your key
     final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"
@@ -791,7 +794,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     String mode,
   ) async {
     final String apiKey =
-        "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI"; // 👈 use your key
+        dotenv.env['GOOGLE_MAPS_API_KEY'] ?? ''; // 👈 use your key
     final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"
@@ -1563,23 +1566,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           // --- END OF BLOCK ---
 
           if (!_welcomeMessageShown) {
-            _welcomeMessageShown = true; // Mark as shown immediately
+            _welcomeMessageShown = true;
 
-            // --- REVISED LOGIC ---
-            // Step 1: Wait for the welcome toast to show and dismiss.
+            // Step 1: Wait for the welcome toast
             await _showWelcomeToast(data);
 
-            // Step 2: Now that the first dialog is gone, show the reminder.
+            // Step 2: Show the tourism reminder
             if (mounted && !_tourismReminderShown) {
               await _showResponsibleTourismReminder();
               setState(() {
                 _tourismReminderShown = true;
               });
             }
+
+            // --- START OF MODIFICATION ---
+            // 3. Proactively check if location is enabled
+            if (mounted) {
+              await _checkLocationOnStartup();
+            }
+            // --- END OF MODIFICATION ---
+
+            // 4. Now, attempt to go to the user's location
             if (mounted) {
               await _goToMyLocation();
             }
-            // --- END OF REVISED LOGIC ---
           }
         }
       },
@@ -1980,6 +1990,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                           ),
                         ),
+                        _buildPoiTip(data),
                         const SizedBox(height: 24),
 
                         // --- Action Buttons ---
@@ -2596,6 +2607,131 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     // Just call _loadActiveItineraryStream again. It will see the null ID
     // and automatically clear the state variables and hide the card.
     _loadActiveItineraryStream();
+  }
+
+  Future<void> _showEnableLocationDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 1. The "Catchy" GIF
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(20),
+                ),
+                child: Image.asset(
+                  'assets/gifs/tourist.gif', // Using your existing GIF
+                  height: 220,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // 2. The Text Content
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  children: [
+                    Text(
+                      'Enable Location?',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).primaryColor,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'This app works best with location services to provide accurate navigation and help you discover nearby places.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: Colors.grey.shade700,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // 3. The Styled Buttons
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(color: Colors.grey.shade300),
+                          ),
+                        ),
+                        child: const Text(
+                          'Not Now',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(context).primaryColor,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Enable',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onPressed: () {
+                          // This opens the device's location settings
+                          AppSettings.openAppSettings(
+                              type: AppSettingsType.location);
+                          Navigator.of(context).pop();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _checkLocationOnStartup() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled && mounted) {
+      // Only show the dialog if services are off
+      await _showEnableLocationDialog();
+    }
+    // We don't check permissions here, _goToMyLocation() will
+    // handle the system permission pop-up if needed.
   }
 
 // ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
@@ -3221,11 +3357,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
                               // 4. (This is your existing logic for POI clicks)
                               if (result is Map<String, dynamic>) {
-                                _showPoiSheet(
-                                  name: result['name'] ?? 'Unnamed',
-                                  description: result['description'] ?? '',
-                                  data: result,
-                                );
+                                if (result['action'] == 'filter') {
+                                  // Change the filter immediately
+                                  _onFilterChanged(result['filterType']);
+                                } else {
+                                  // Existing POI logic
+                                  _showPoiSheet(
+                                    name: result['name'] ?? 'Unnamed',
+                                    description: result['description'] ?? '',
+                                    data: result,
+                                  );
+                                }
                               }
                             },
                           ),
@@ -4606,6 +4748,79 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildPoiTip(Map<String, dynamic> poiData) {
+    String? title;
+    String? content;
+    IconData? icon;
+
+    // Check for specific POIs by name
+    switch (poiData['name']) {
+      case 'Sumaguing Cave':
+      case 'Lumiang to Sumaguing Cave Connection':
+        title = 'What to Wear & Warning';
+        content =
+            'Wear dri-fit clothing and flip-flops, outdoor sandals, or water shoes. This tour carries physical risks and is not recommended for those with underlying conditions.';
+        icon = Icons.warning_amber_rounded;
+        break;
+      case 'Hanging Coffins':
+        title = 'Respect Sacred Ground';
+        content =
+            'This is a sacred burial ground. Please be respectful, minimize noise, and avoid shouting.';
+        icon = Icons.volume_off_outlined;
+        break;
+      case 'Sagada Pottery':
+        title = 'Pottery Tip';
+        content =
+            'Be careful not to break any pottery. Always ask permission before touching materials.';
+        icon = Icons.back_hand_outlined;
+        break;
+    }
+
+    // If no specific tip, return an empty container
+    if (title == null) {
+      return const SizedBox.shrink();
+    }
+
+    // Build the card
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: Colors.amber.shade800, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.amber.shade900,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            content!,
+            style: TextStyle(
+              color: Colors.black87,
+              height: 1.4,
+            ),
+          ),
+        ],
       ),
     );
   }

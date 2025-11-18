@@ -69,6 +69,7 @@ dependencies:
   provider: ^6.1.5+1
   photo_view: ^0.15.0
   google_sign_in: ^7.2.0
+  flutter_dotenv: ^6.0.0
 
 dev_dependencies:
   flutter_test:
@@ -87,6 +88,7 @@ flutter:
   # the material Icons class.
   uses-material-design: true
   assets:
+    - .env
     - assets/images/
     - assets/map_styles/map_style.json
     - assets/map_styles/clean.json
@@ -99,6 +101,7 @@ flutter:
     - assets/images/profile_bg.png
     - assets/icons/
     - assets/gifs/tourist_walk.gif
+    - assets/gifs/tourist.gif
 
 flutter_launcher_icons:
   android: true    # Generate for Android

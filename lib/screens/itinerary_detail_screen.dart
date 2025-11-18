@@ -15,6 +15,7 @@ import 'dart:async';
 import 'package:provider/provider.dart';
 
 import 'event_journal_screen.dart'; // ⭐️ --- ADD THIS NEW IMPORT --- ⭐️
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class ItineraryDetailScreen extends StatefulWidget {
   // ... (no changes here) ...
@@ -264,7 +265,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
   }
 
   Future<String?> _getTravelDuration(LatLng origin, LatLng destination) async {
-    const String apiKey = "AIzaSyCp73OfWNg7pGMFCe6QVdSCkyPBhwof9dI";
+    final String apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
     final String url = "https://maps.googleapis.com/maps/api/directions/json"
         "?origin=${origin.latitude},${origin.longitude}"
         "&destination=${destination.latitude},${destination.longitude}"

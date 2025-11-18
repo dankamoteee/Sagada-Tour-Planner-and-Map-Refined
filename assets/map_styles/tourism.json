@@ -45,5 +45,23 @@
     "featureType": "poi.park",
     "elementType": "geometry.fill",
     "stylers": [{ "color": "#cde8c3" }]
+  },
+  {
+    "featureType": "road",
+    "elementType": "labels.text.fill",
+    "stylers": [{ "color": "#757575" }]
+  },
+  {
+    "featureType": "water",
+    "elementType": "labels.text.fill",
+    "stylers": [{ "color": "#5a7a8a" }]
+  },
+  {
+    "featureType": "poi.park",
+    "elementType": "labels.text.fill",
+    "stylers": [
+      { "visibility": "on" },
+      { "color": "#5a7a8a" }
+    ]
   }
 ]

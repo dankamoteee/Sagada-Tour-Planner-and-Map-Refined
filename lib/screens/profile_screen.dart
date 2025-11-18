@@ -6,12 +6,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_screen.dart';
-// import 'recently_viewed_screen.dart'; // <-- REMOVED
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'package:provider/provider.dart';
-import '../providers/theme_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+// ⭐️ --- REMOVED PROVIDER IMPORTS --- ⭐️
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -30,7 +29,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final ImagePicker _picker = ImagePicker();
   bool _isUploading = false;
 
-  // ⭐️ --- ADDED CONTROLLERS AND VARIABLES --- ⭐️
   final TextEditingController _usernameController = TextEditingController();
   String? _selectedMapStyle;
 
@@ -45,8 +43,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadMapStylePreference();
   }
 
-  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
-  /// Loads the saved map style from SharedPreferences
   Future<void> _loadMapStylePreference() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -55,8 +51,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
-  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
-  /// Saves the map style preference
   Future<void> _setMapStylePreference(String? style) async {
     if (style == null) return;
     final prefs = await SharedPreferences.getInstance();
@@ -108,8 +102,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ⭐️ --- ADDED THIS FUNCTION --- ⭐️
-  /// Shows a dialog to edit the username
   Future<void> _showEditUsernameDialog() async {
     _usernameController.text =
         _userData['username'] ?? ''; // Ensure controller is up-to-date
@@ -291,7 +283,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 context,
                 title: "User Details",
                 children: [
-                  // ⭐️ --- MODIFIED THIS --- ⭐️
                   _buildEditableDetailRow(
                     Icons.person_outline,
                     "Username",
@@ -308,31 +299,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ],
               ),
-              // ⭐️ --- ADDED THIS CARD --- ⭐️
               _buildInfoCard(
                 context,
                 title: "App Preferences",
                 children: [
-                  _buildMapStyleDropdown(),
-                  Consumer<ThemeProvider>(
-                    // 1. Use a Consumer to get the provider
-                    builder: (context, themeProvider, child) {
-                      return SwitchListTile(
-                        title: const Text("Dark Mode"),
-                        // 2. Set the value from the provider
-                        value: themeProvider.themeMode == ThemeMode.dark,
-                        // 3. Call the provider's method on change
-                        onChanged: (bool value) {
-                          themeProvider.setTheme(value);
-                        },
-                        secondary: Icon(Icons.dark_mode_outlined,
-                            color: Colors.grey.shade600),
-                      );
-                    },
-                  ),
+                  // ⭐️ --- MODIFIED THIS SECTION --- ⭐️
+                  _buildMapStyleChips(),
+                  // SwitchListTile for Dark Mode has been removed
+                  // ⭐️ --- END OF MODIFICATION --- ⭐️
                 ],
               ),
-              // ⭐️ --- ADDED THIS CARD --- ⭐️
               _buildInfoCard(
                 context,
                 title: "Account Management",
@@ -409,7 +385,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Colors.red,
                     () {
                       // TODO: Implement full account deletion logic.
-                      // This is complex and requires deleting all user sub-collections.
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                             content: Text(
@@ -419,7 +394,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ],
               ),
-              // --- REMOVED "My Activities" CARD ---
               const SizedBox(height: 24),
             ]),
           ),
@@ -498,8 +472,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
-  /// A detail row with an edit button on the far right.
   Widget _buildEditableDetailRow(IconData icon, String title, String value,
       {required VoidCallback onEdit}) {
     return Padding(
@@ -539,45 +511,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
-  /// Builds the dropdown for map style selection
-  Widget _buildMapStyleDropdown() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: DropdownButtonFormField<String>(
-        value: _selectedMapStyle,
-        decoration: InputDecoration(
-          labelText: "Default Map Style",
-          prefixIcon: Icon(Icons.map_outlined, color: Colors.grey.shade600),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide.none,
-          ),
-          filled: true,
-          fillColor: Colors.grey.shade100,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+  // ⭐️ --- WIDGET REVAMPED --- ⭐️
+  /// Builds the ChoiceChips for map style selection
+  Widget _buildMapStyleChips() {
+    // A map of the style file name to its display name
+    final Map<String, String> styles = {
+      'tourism.json': 'Tourism',
+      'clean.json': 'Clean',
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.map_outlined, color: Colors.grey.shade600, size: 20),
+            const SizedBox(width: 16),
+            Text(
+              "Default Map Style",
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          ],
         ),
-        items: const [
-          DropdownMenuItem(
-            value: 'tourism.json',
-            child: Text('Tourism'),
-          ),
-          DropdownMenuItem(
-            value: 'clean.json',
-            child: Text('Clean'),
-          ),
-          // "Default" option removed as requested
-        ],
-        onChanged: (value) {
-          _setMapStylePreference(value);
-        },
-      ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8.0,
+          children: styles.keys.map((styleFile) {
+            return ChoiceChip(
+              label: Text(styles[styleFile]!),
+              labelStyle: TextStyle(
+                color:
+                    _selectedMapStyle == styleFile ? themeColor : Colors.black,
+              ),
+              selected: _selectedMapStyle == styleFile,
+              onSelected: (bool selected) {
+                if (selected) {
+                  _setMapStylePreference(styleFile);
+                }
+              },
+              selectedColor: themeColor.withOpacity(0.1),
+              backgroundColor: Colors.grey.shade200,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(
+                  color: _selectedMapStyle == styleFile
+                      ? themeColor
+                      : Colors.grey.shade300,
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
+  // ⭐️ --- END OF REVAMP --- ⭐️
 
-  // ⭐️ --- ADDED THIS NEW HELPER WIDGET --- ⭐️
-  /// Builds a clickable row for the Account Management card
   Widget _buildAccountActionRow(
       String title, IconData icon, Color color, VoidCallback onTap) {
     return ListTile(
@@ -585,7 +574,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       title: Text(title,
           style: TextStyle(fontWeight: FontWeight.w500, color: color)),
       trailing: Icon(Icons.arrow_forward_ios, size: 16, color: color),
-      contentPadding: EdgeInsets.zero, // Make it align with other rows
+      contentPadding: EdgeInsets.zero,
       onTap: onTap,
     );
   }

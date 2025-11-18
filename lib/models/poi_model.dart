@@ -13,6 +13,8 @@ class Poi {
   final String? primaryImage; // For cards/lists
   final List<String> images; // For the gallery
 
+  final String? legacyImageUrl; // For backward compatibility
+
   // Reverted to simple fields
   final String? openingHours;
   final String? contactNumber;
@@ -41,6 +43,7 @@ class Poi {
     this.entranceFee,
     this.guideRequired,
     this.distance,
+    this.legacyImageUrl,
   });
 
   // Factory constructor to create a Poi instance from a Firestore document
@@ -77,6 +80,7 @@ class Poi {
       primaryImage: data['primaryImage'] as String?,
       images: images,
       openingHours: data['openingHours'] as String?, // Reverted to String
+      legacyImageUrl: data['imageUrl'] as String?, // Read the legacy field
       contactNumber: data['contactNumber'] as String?, // Reverted to String
       status: data['status'] as String?, // Reverted to String
       entranceFee:
@@ -96,6 +100,7 @@ class Poi {
       'primaryImage': primaryImage,
       'images': images,
       'openingHours': openingHours,
+      'imageUrl': legacyImageUrl, // Pass it along to the map
       'contactNumber': contactNumber,
       'status': status,
       'entranceFee': entranceFee,
