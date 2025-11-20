@@ -1,9 +1,10 @@
+// ignore_for_file: deprecated_member_use
+
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:timeago/timeago.dart' as timeago;
 import '../services/marker_service.dart';
 import '../services/poi_search_delegate.dart';
 import '../widgets/profile_menu.dart';
@@ -24,23 +25,27 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'event_editor_screen.dart';
 import 'package:flutter_tts/flutter_tts.dart'; // 👈 ADD THIS
-import 'package:html_unescape/html_unescape.dart'; // 👈 ADD THIS (for cleaning text)
-import 'package:maps_toolkit/maps_toolkit.dart' as map_tools;
-import 'guidelines_screen.dart';
 import 'itinerary_detail_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../models/tour_guide_model.dart';
-
-// Enum to manage the panel's visibility state
-enum NavigationPanelState { hidden, minimized, expanded }
+import '../widgets/navigation_overlay.dart';
+import '../widgets/navigation_panel.dart';
+import '../widgets/heads_up_card.dart';
+import '../widgets/transport_details_card.dart';
+import '../widgets/closure_alert_dialog.dart';
+import '../widgets/poi_tip_card.dart';
+import '../services/route_service.dart';
+import '../services/user_data_service.dart';
+import '../widgets/responsible_tourism_dialog.dart';
+import '../widgets/enable_location_dialog.dart';
+import '../widgets/guide_card.dart';
 
 enum LocationButtonState {
   centered,
   offCenter,
   navigating,
   compass,
-} // Add compass
+}
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -85,8 +90,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<Position>? _positionStreamSubscription;
   List<Map<String, dynamic>> _allPoiData = []; // To cache Firestore data
   double _currentZoom = 14.0; // To track the current zoom level
-  final double _labelZoomThreshold = 14.0; // The zoom level to show labels
   // --- START: ADD FOR TURN-BY-TURN ---
+  final RouteService _routeService = RouteService();
+  final MarkerService _markerService = MarkerService();
+  final UserDataService _userDataService = UserDataService();
   late FlutterTts _flutterTts; // The TTS engine
   // ⭐️ --- START OF NEW "HEADS-UP" VARIABLES --- ⭐️
   Stream<QuerySnapshot>? _activeItineraryStream;
@@ -342,10 +349,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         final List<LatLng> mainRoutePoints =
             decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
-        bool isBlocked = await _checkRouteForClosures(mainRoutePoints);
+        // 1. Check for closures using the Service
+        bool isBlocked =
+            _routeService.isRouteBlocked(mainRoutePoints, _closureLines);
+
         if (isBlocked) {
-          _endNavigation();
-          return;
+          // 2. Show the warning dialog (using the helper we added in Step 8)
+          final bool proceed = await _showClosureWarningDialog();
+
+          // 3. If user cancels, stop drawing
+          if (!proceed) {
+            _endNavigation();
+            return;
+          }
         }
         allPolylines.add(
           Polyline(
@@ -449,7 +465,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         // Update the state
         setState(() {
           _polylines = allPolylines;
-          _markers.addAll(numberedMarkers);
+          // ⭐️ FIX: Use "=" instead of "addAll" to WIPE old markers ⭐️
+          _markers = numberedMarkers;
           _itineraryTitle = title;
           _itineraryEvents = events; // Save the full list
           _itinerarySummary = {
@@ -536,75 +553,62 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _rebuildMarkers() async {
-    if (_isItineraryRouteVisible ||
-        _navigationDetails != null ||
-        _currentTransportRouteData != null) {
-      return;
-    }
+    // 1. Determine if we are in a mode that requires "Clutter Reduction"
+    // (Itinerary or Transport Route active)
+    final bool useStrictFiltering =
+        _isItineraryRouteVisible || _currentTransportRouteData != null;
 
-    // ⭐️ OPTIMIZATION 1: ZOOM FILTERING ⭐️
+    List<Map<String, dynamic>> visiblePois;
 
-    // Decide what categories to show based on zoom level
-
-    List<Map<String, dynamic>> visiblePois = [];
-
-    bool showLabels = false;
-
-    if (_currentZoom < 13) {
-      // Zoom 0-12 (Far): Show ONLY major Tourist Spots
-
-      // This keeps the map clean at the province level
-
+    if (useStrictFiltering) {
+      // 🔒 Strict Mode: Show ONLY Tourist Spots
+      // (Keeps the map clean when viewing a static route plan)
       visiblePois =
           _allPoiData.where((p) => p['type'] == 'Tourist Spots').toList();
-
-      showLabels = false; // No text labels
-    } else if (_currentZoom < 15.5) {
-      // Zoom 13-15 (Town View): Add Hotels & Food
-
-      // Good for getting a general vibe of the town
-
-      visiblePois = _allPoiData.where((p) {
-        final t = p['type'];
-
-        return t == 'Tourist Spots' ||
-            t == 'Accommodations' ||
-            t == 'Food & Dining' ||
-            t == 'Transport Terminals'; // Important for arrival
-      }).toList();
-
-      showLabels = false; // Still too crowded for text
     } else {
-      // Zoom 16+ (Street View): Show EVERYTHING
+      // 🌍 Standard Mode (Normal Map & Live Navigation)
 
-      visiblePois = _allPoiData;
-
-      showLabels = true; // Now we can show text labels
+      // ⭐️ NEW LOGIC: If user selected a specific filter (e.g. "Food"), show ALL of them.
+      // We only use "Smart Zoom" filtering when browsing "All" categories.
+      if (_selectedFilter != 'All') {
+        visiblePois = _allPoiData;
+      } else {
+        // Use the smart zoom logic (e.g., hide hotels when zoomed out)
+        visiblePois = _markerService.filterPoisByZoom(
+          allPois: _allPoiData,
+          zoomLevel: _currentZoom,
+        );
+      }
     }
 
-    // Only process the VISIBLE list (saves processing power!)
-
-    final markers = await Future.wait(
-      visiblePois.map((data) async {
-        final markerService = MarkerService();
-
-        return await markerService.createMarker(
+    // 2. Create the markers for these visible POIs
+    final Set<Marker> normalMarkers = await _markerService.createMarkers(
+      poiList: visiblePois,
+      zoomLevel: _currentZoom,
+      onTap: (data) {
+        _showPoiSheet(
+          name: data['name'] ?? 'Unnamed',
+          description: data['description'] ?? 'No description available.',
           data: data,
-          showLabel: showLabels,
-          onTap: (data) {
-            _showPoiSheet(
-              name: data['name'] ?? 'Unnamed',
-              description: data['description'] ?? 'No description available.',
-              data: data,
-            );
-          },
         );
-      }),
+      },
     );
 
+    // 3. Preserve existing Route Markers
+    final Set<Marker> routeMarkers = _markers.where((m) {
+      final id = m.markerId.value;
+      return id == 'start_pin' ||
+          id == 'end_pin' ||
+          id == 'distance_marker' ||
+          id.startsWith('itinerary_stop_') ||
+          id == 'transport_start' ||
+          id == 'transport_end';
+    }).toSet();
+
+    // 4. Merge them!
     if (mounted) {
       setState(() {
-        _markers = Set.from(markers);
+        _markers = normalMarkers.union(routeMarkers);
       });
     }
   }
@@ -638,65 +642,50 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
 
-  // This is the new, more powerful function
+// This is the new, cleaner _drawRoute function
   Future<bool> _drawRoute(
     LatLng origin,
     LatLng destination,
     String mode,
   ) async {
-    // Save destination for re-use if needed later
     _lastDestination = destination;
 
-    // 1. GET THE ROUTE DATA USING YOUR EXISTING HTTP METHOD
-    final String apiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? ''; // Your key
-    final String url = "https://maps.googleapis.com/maps/api/directions/json"
-        "?origin=${origin.latitude},${origin.longitude}"
-        "&destination=${destination.latitude},${destination.longitude}"
-        "&mode=$mode&key=$apiKey";
+    // 1. Use the Service to fetch the route
+    final routeData = await _routeService.getRoutePolyline(
+      origin: origin,
+      destination: destination,
+      mode: mode,
+    );
 
-    final response = await http.get(Uri.parse(url));
-
-    if (response.statusCode != 200) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Failed to get directions: ${response.body}")),
-      );
-      return false; // 👈 2. Add return
-    }
-
-    final data = json.decode(response.body);
-
-    if (data["routes"].isEmpty) {
+    if (routeData == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("No route available for $mode mode here.")),
       );
-      return false; // 👈 3. Add return
+      return false;
     }
 
-    // 2. DECODE THE POLYLINE (The new, correct way)
-    final String encodedPolyline =
-        data["routes"][0]["overview_polyline"]["points"];
+    _polylineCoordinates = routeData['points'];
 
-    final List<PointLatLng> decodedPoints = PolylinePoints.decodePolyline(
-      encodedPolyline,
+    // 2. Use the Service to check for closures
+    // Note: We pass _closureLines (which is a Set<Polyline>)
+    bool isBlocked = _routeService.isRouteBlocked(
+      _polylineCoordinates,
+      _closureLines,
     );
 
-    _polylineCoordinates =
-        decodedPoints.map((p) => LatLng(p.latitude, p.longitude)).toList();
-
-    if (_polylineCoordinates.isEmpty) return false; // 👈 4. Add return
-
-    // --- ⭐️ ADD THIS CHECK ⭐️ ---
-    bool isBlocked = await _checkRouteForClosures(_polylineCoordinates);
     if (isBlocked) {
-      _endNavigation(); // Clear the route
-      return false; // 👈 5. THIS IS THE KEY FIX
+      // Show the warning dialog
+      final bool proceed = await _showClosureWarningDialog();
+      if (!proceed) {
+        _endNavigation();
+        return false;
+      }
     }
-    // --- END OF CHECK ---
 
-    // 3. Create a new Set to hold all our polylines...
+    // 3. Create the Polylines (Visuals)
     final Set<Polyline> polylines = {};
 
-    // 4. Create the main, solid on-road route polyline
+    // Main on-road segment
     polylines.add(
       Polyline(
         polylineId: const PolylineId("on_road_route"),
@@ -709,28 +698,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     );
 
-    // 5. Check if the destination is off-road...
-    final LatLng lastPointOnRoad = _polylineCoordinates.last;
-    final double offRoadDistance = Geolocator.distanceBetween(
-      lastPointOnRoad.latitude,
-      lastPointOnRoad.longitude,
-      destination.latitude,
-      destination.longitude,
-    );
-
-    if (offRoadDistance > 10) {
-      polylines.add(
-        Polyline(
-          polylineId: const PolylineId("off_road_segment"),
-          color: Colors.blue.shade400,
-          width: 5,
-          points: [lastPointOnRoad, destination],
-          patterns: [PatternItem.dot, PatternItem.gap(10)],
-        ),
+    // Check if the destination is off-road (last mile)
+    if (_polylineCoordinates.isNotEmpty) {
+      final LatLng lastPointOnRoad = _polylineCoordinates.last;
+      final double offRoadDistance = Geolocator.distanceBetween(
+        lastPointOnRoad.latitude,
+        lastPointOnRoad.longitude,
+        destination.latitude,
+        destination.longitude,
       );
+
+      if (offRoadDistance > 10) {
+        polylines.add(
+          Polyline(
+            polylineId: const PolylineId("off_road_segment"),
+            color: Colors.blue.shade400,
+            width: 5,
+            points: [lastPointOnRoad, destination],
+            patterns: [PatternItem.dot, PatternItem.gap(10)],
+          ),
+        );
+      }
     }
 
-    // 6. Create the custom circle icons for start and end
+    // 4. Icons & State Update
     final BitmapDescriptor startIcon = await _createCircleMarkerBitmap(
       Colors.green.shade600,
     );
@@ -739,8 +730,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
 
     setState(() {
-      _polylines = polylines; // Update the state
-
+      _polylines = polylines;
       _markers.add(
         Marker(
           markerId: const MarkerId('start_pin'),
@@ -761,14 +751,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
     });
 
-    LatLngBounds bounds = _boundsFromLatLngList([
-      origin,
-      destination,
-      ..._polylineCoordinates,
-    ]);
-    _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
+    // 5. Animate Camera
+    if (routeData['bounds_data'] != null) {
+      // Ideally we use bounds from API, but for now we can stick to your existing helper
+      // or use the bounds_data if you want to parse it.
+      // Let's keep your existing helper for consistency:
+      LatLngBounds bounds = _boundsFromLatLngList([
+        origin,
+        destination,
+        ..._polylineCoordinates,
+      ]);
+      _mapController?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
+    }
 
-    return true; // 👈 6. Add return (success!)
+    return true;
   }
 
   // Your old _drawRouteToPoi function now becomes much simpler
@@ -821,69 +817,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return LatLngBounds(southwest: LatLng(x0, y0), northeast: LatLng(x1, y1));
   }
 
-  String _cleanHtmlString(String htmlString) {
-    // More specific regex to remove only b tags, but preserve the content
-    final RegExp regExp =
-        RegExp(r"<\/?b>", multiLine: true, caseSensitive: true);
-    // Use html_unescape to handle entities like &amp;
-    return HtmlUnescape().convert(htmlString.replaceAll(regExp, ''));
-  }
-
   Future<Map<String, dynamic>?> _getDirectionsDetails(
     LatLng origin,
     LatLng destination,
     String mode,
   ) async {
-    final String apiKey =
-        dotenv.env['GOOGLE_MAPS_API_KEY'] ?? ''; // 👈 use your key
-    final String url = "https://maps.googleapis.com/maps/api/directions/json"
-        "?origin=${origin.latitude},${origin.longitude}"
-        "&destination=${destination.latitude},${destination.longitude}"
-        "&mode=$mode&key=$apiKey";
-
-    final response = await http.get(Uri.parse(url));
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      if (data["status"] == "ZERO_RESULTS") {
-        return {
-          "distance": "N/A",
-          "duration": "N/A",
-          // --- ⭐️ ADD THIS LINE ⭐️ ---
-          "startAddress": "N/A",
-          "endAddress": "${destination.latitude}, ${destination.longitude}",
-          "steps": [], // Return empty steps
-        };
-      }
-      if (data["routes"].isNotEmpty) {
-        final leg = data["routes"][0]["legs"][0];
-
-        // --- THIS IS THE NEW PART ---
-        final List<dynamic> stepsData = leg["steps"];
-        final List<Map<String, dynamic>> steps = stepsData.map((step) {
-          return {
-            "instruction": _cleanHtmlString(step["html_instructions"]),
-            "distance": step["distance"]["text"],
-            "duration": step["duration"]["text"],
-            "end_location": LatLng(
-              step["end_location"]["lat"],
-              step["end_location"]["lng"],
-            ),
-          };
-        }).toList();
-        // --- END OF NEW PART ---
-
-        return {
-          "distance": leg["distance"]["text"],
-          "duration": leg["duration"]["text"],
-          // --- ⭐️ ADD THIS LINE ⭐️ ---
-          "startAddress": leg["start_address"],
-          "endAddress": leg["end_address"],
-          "steps": steps, // Return the parsed steps
-        };
-      }
-    }
-    return null;
+    // Delegates entirely to the service
+    return await _routeService.getDirectionsDetails(
+      origin: origin,
+      destination: destination,
+      mode: mode,
+    );
   }
 
   Future<void> _loadCustomIcons() async {
@@ -920,171 +864,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     Map<String, dynamic>? poiData,
   }) async {
     final bool isGuideRequired = poiData?['guideRequired'] as bool? ?? false;
-    final guideSubtitle = isGuideRequired
-        ? 'This destination requires an accredited guide.'
-        : 'For certain sites, a guide may be required. Please verify at the Tourism Office.';
 
     return showDialog<bool>(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          insetPadding: const EdgeInsets.symmetric(
-            horizontal: 20,
-            vertical: 24,
-          ),
-          contentPadding: EdgeInsets.zero,
-          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-
-          title: null,
-
-          // This is the main content of the dialog
-          content: SizedBox(
-            // Constrain the width of the content. This is the key fix.
-            width: double.maxFinite,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize:
-                    MainAxisSize.min, // Make column take up minimum space
-                children: [
-                  // GIF Animation at the top
-                  ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(20),
-                    ),
-                    child: Image.asset(
-                      'assets/gifs/tourist_walk.gif', // Your GIF path here
-                      height: 220,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Column(
-                      children: [
-                        Text(
-                          'Be a Responsible Tourist!',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).primaryColor,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-
-                        // Information List
-                        ListTile(
-                          leading: Icon(
-                            Icons.app_registration,
-                            color: Colors.blue.shade700,
-                          ),
-                          title: const Text(
-                            'Register First',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: const Text(
-                            'Always register at the Municipal Tourism Office before proceeding.',
-                          ),
-                          dense: true,
-                        ),
-                        ListTile(
-                          leading: Icon(
-                            Icons.person_search,
-                            color: Colors.green.shade700,
-                          ),
-                          title: const Text(
-                            'Secure a Guide',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Text(guideSubtitle),
-                          dense: true,
-                        ),
-                        ListTile(
-                          leading: Icon(
-                            Icons.eco,
-                            color: Colors.orange.shade700,
-                          ),
-                          title: const Text(
-                            'Leave No Trace',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: const Text(
-                            'Respect environment & local culture. Take your trash with you.',
-                          ),
-                          dense: true,
-                        ),
-                        const SizedBox(height: 5),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: <Widget>[
-            // 1. We wrap the buttons in a Column
-            Column(
-              children: [
-                // 2. The new "Read Full Guidelines" button
-                TextButton(
-                  child: const Text('Read Full Tour Guidelines'),
-                  onPressed: () {
-                    // 3. This will navigate to your new screen.
-                    //    Make sure you've added the import at the top.
-
-                    // --- UNCOMMENT THIS ONCE YOUR SCREEN IS READY ---
-
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => const GuidelinesScreen(),
-                      ),
-                    );
-
-                    // --- DELETE THIS SNACKBAR (it's a placeholder) ---
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Navigate to GuidelinesScreen() here."),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 4), // Spacer
-
-                // 4. The existing "I Understand" button
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    child: const Text('I Understand'),
-                    onPressed: () => Navigator.of(context).pop(true),
-                  ),
-                ),
-              ],
-            )
-          ],
-        );
+        return ResponsibleTourismDialog(isGuideRequired: isGuideRequired);
       },
     );
   }
-
-// In lib/screens/map_screen.dart
 
   // In lib/screens/map_homescreen.dart
 
@@ -2031,7 +1818,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                           ),
                         ),
-                        _buildPoiTip(data),
+                        PoiTipCard(poiData: data),
                         const SizedBox(height: 24),
 
                         // --- Action Buttons ---
@@ -2266,82 +2053,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   // In lib/screens/map_homescreen.dart
 
   Future<void> _saveToRecentlyViewed(Map<String, dynamic> poiData) async {
-    if (_currentUser == null) return; // Only save if a user is logged in
-
-    print("✅ Saving '${poiData['name']}' to recently viewed...");
-
-    final String poiId = poiData['id'];
-    final String userId = _currentUser!.uid;
-
-    final docRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('recentlyViewed')
-        .doc(poiId);
-
-    // --- START OF NEW, ROBUST IMAGE LOGIC ---
-    // 1. Try to get the new 'primaryImage'
-    final String? primaryImage = poiData['primaryImage'] as String?;
-
-    // 2. Try to get the 'images' list
-    final List<dynamic>? imagesList = poiData['images'] as List<dynamic>?;
-
-    // 3. Try to get the old 'imageUrl' (for backward compatibility)
-    final String? legacyImageUrl = poiData['imageUrl'] as String?;
-
-    // Find the best available image URL
-    String? recentImageUrl;
-    if (primaryImage != null && primaryImage.isNotEmpty) {
-      recentImageUrl = primaryImage;
-    } else if (imagesList != null && imagesList.isNotEmpty) {
-      recentImageUrl = imagesList[0] as String?;
-    } else if (legacyImageUrl != null && legacyImageUrl.isNotEmpty) {
-      recentImageUrl = legacyImageUrl;
-    }
-    // --- END OF NEW, ROBUST IMAGE LOGIC ---
-
-    // Use `set` to either create a new record or update the timestamp
-    await docRef.set({
-      'poiId': poiId,
-      'viewedAt': FieldValue.serverTimestamp(),
-      'name': poiData['name'],
-      'imageUrl': recentImageUrl ?? '', // Use the safely determined URL
-    });
-
-    // ... (your existing logic to limit history remains the same)
-    final query = FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('recentlyViewed')
-        .orderBy('viewedAt', descending: true)
-        .limit(20);
-
-    final snapshot = await query.get();
-    if (snapshot.docs.length == 20) {
-      final lastVisible = snapshot.docs.last;
-      final olderItemsQuery = FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection('recentlyViewed')
-          .where('viewedAt', isLessThan: lastVisible['viewedAt']);
-
-      final olderItems = await olderItemsQuery.get();
-      for (var doc in olderItems.docs) {
-        await doc.reference.delete();
-      }
-    }
+    if (_currentUser == null) return;
+    await _userDataService.saveToRecentlyViewed(
+      userId: _currentUser!.uid,
+      poiData: poiData,
+    );
   }
 
   Future<Map<String, dynamic>?> _showItinerarySelectorDialog() async {
     if (_currentUser == null) return null;
 
-    final snapshot = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(_currentUser!.uid)
-        .collection('itineraries')
-        .get();
-
-    final itineraries = snapshot.docs;
+    final itineraries =
+        await _userDataService.getUserItineraries(_currentUser!.uid);
 
     return showDialog<Map<String, dynamic>>(
       context: context,
@@ -2394,106 +2117,43 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Checks if a route passes through any known closures.
-  /// Returns 'true' if the route is blocked, 'false' if it's clear.
-  Future<bool> _checkRouteForClosures(List<LatLng> routePoints) async {
-    // Check the new _closureLines set
-    if (_closureLines.isEmpty || routePoints.isEmpty) {
-      return false; // No closures or route, so it's "clear"
-    }
-
-    // Check every point on the user's navigation polyline
-    for (final point in routePoints) {
-      // Convert the route point to a maps_toolkit LatLng
-      final routePointLatLng =
-          map_tools.LatLng(point.latitude, point.longitude);
-
-      // Against every closure LINE
-      for (final line in _closureLines) {
-        // Convert the closure line's points
-        final closureLinePoints = line.points
-            .map((p) => map_tools.LatLng(p.latitude, p.longitude))
-            .toList();
-
-        // ⭐️ --- THE NEW LOGIC --- ⭐️
-        // Check if the route point is within 20 meters of the closure line
-        bool isClose = map_tools.PolygonUtil.isLocationOnPath(
-          routePointLatLng,
-          closureLinePoints,
-          false, // geodesic
-          tolerance: 20, // 20-meter "bubble" around the line
-        );
-
-        if (isClose) {
-          // This route is blocked! Show your existing warning.
-          final bool? proceed = await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) {
-              // --- Your existing dialog code is perfect ---
-              return AlertDialog(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                insetPadding: const EdgeInsets.symmetric(
-                    horizontal: 24.0, vertical: 24.0),
-                title: Column(
-                  children: [
-                    Icon(
-                      Icons.warning_amber_rounded,
-                      color: Colors.amber.shade800,
-                      size: 64,
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Route Advisory',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-                content: const Text(
-                  'This route passes through a known road closure. This could be due to a landslide, event, or other hazard.\n\nAre you sure you want to continue?',
+  Future<bool> _showClosureWarningDialog() async {
+    final bool? proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Column(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  color: Colors.amber.shade800, size: 64),
+              const SizedBox(height: 16),
+              const Text('Route Advisory',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 15, height: 1.4),
-                ),
-                actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                actionsAlignment: MainAxisAlignment.spaceBetween,
-                actions: [
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      foregroundColor: Colors.red.shade700,
-                      textStyle: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    child: const Text("Proceed Anyway"),
-                    onPressed: () => Navigator.of(context).pop(true),
-                  ),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                      textStyle: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    child: const Text("Cancel Route"),
-                    onPressed: () => Navigator.of(context).pop(false),
-                  ),
-                ],
-              );
-            },
-          );
-          // --- End of dialog ---
-
-          return !(proceed ?? false);
-        }
-      }
-    }
-
-    return false; // No intersections found, route is clear.
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: const Text(
+            'This route passes through a known road closure. This could be due to a landslide, event, or other hazard.\n\nAre you sure you want to continue?',
+            textAlign: TextAlign.center,
+          ),
+          actions: [
+            TextButton(
+              child: const Text("Proceed Anyway",
+                  style: TextStyle(color: Colors.red)),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+            ElevatedButton(
+              child: const Text("Cancel Route"),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+          ],
+        );
+      },
+    );
+    return proceed ?? false;
   }
 
   Future<void> _updateNearbyPois() async {
@@ -2593,11 +2253,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               .orderBy('eventTime')
               .snapshots();
 
+          _activeItineraryStream = _userDataService.getActiveItineraryStream(
+            userId: user.uid,
+            itineraryId: _activeItineraryId!,
+          );
+
+          // 👇 ADD THIS LINE BACK:
           _activeItineraryStream?.listen(_updateHeadsUpEvent);
         });
 
-        // ⭐️ 2. NEW: Fetch Itinerary Details to find the Guide ⭐️
-        _fetchActiveGuideDetails(user.uid, newActiveId);
+        final guide = await _userDataService.fetchActiveGuide(
+            userId: user.uid, itineraryId: newActiveId);
+        if (mounted) {
+          setState(() {
+            _activeTourGuide = guide;
+          });
+        }
       }
     } else {
       if (mounted) {
@@ -2640,127 +2311,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   /// Removes the active itinerary from SharedPreferences and updates the UI.
   Future<void> _clearActiveItinerary() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('activeItineraryId');
-    await prefs.remove('activeItineraryName');
-
-    // Just call _loadActiveItineraryStream again. It will see the null ID
-    // and automatically clear the state variables and hide the card.
-    _loadActiveItineraryStream();
+    await _userDataService.clearActiveItinerary();
+    _loadActiveItineraryStream(); // Refresh state
   }
 
   Future<void> _showEnableLocationDialog() async {
     await showDialog(
       context: context,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 1. The "Catchy" GIF
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(20),
-                ),
-                child: Image.asset(
-                  'assets/gifs/tourist.gif', // Using your existing GIF
-                  height: 220,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // 2. The Text Content
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Column(
-                  children: [
-                    Text(
-                      'Enable Location?',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).primaryColor,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'This app works best with location services to provide accurate navigation and help you discover nearby places.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 15,
-                        color: Colors.grey.shade700,
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              // 3. The Styled Buttons
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            side: BorderSide(color: Colors.grey.shade300),
-                          ),
-                        ),
-                        child: const Text(
-                          'Not Now',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(context).primaryColor,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: const Text(
-                          'Enable',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        onPressed: () {
-                          // This opens the device's location settings
-                          AppSettings.openAppSettings(
-                              type: AppSettingsType.location);
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      builder: (context) => const EnableLocationDialog(),
     );
   }
 
@@ -2772,40 +2330,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     // We don't check permissions here, _goToMyLocation() will
     // handle the system permission pop-up if needed.
-  }
-
-  Future<void> _fetchActiveGuideDetails(
-      String userId, String itineraryId) async {
-    try {
-      // 1. Get the itinerary document to see if a guideId is saved
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection('itineraries')
-          .doc(itineraryId)
-          .get();
-
-      if (doc.exists && doc.data()!.containsKey('guideId')) {
-        final String guideId = doc.data()!['guideId'];
-        if (guideId.isNotEmpty) {
-          // 2. Fetch the actual Tour Guide details
-          final guideDoc = await FirebaseFirestore.instance
-              .collection('tourGuides')
-              .doc(guideId)
-              .get();
-
-          if (guideDoc.exists && mounted) {
-            setState(() {
-              _activeTourGuide = TourGuide.fromFirestore(guideDoc);
-            });
-          }
-        }
-      } else {
-        if (mounted) setState(() => _activeTourGuide = null);
-      }
-    } catch (e) {
-      print("Error fetching guide: $e");
-    }
   }
 
 // ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
@@ -3152,140 +2676,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   /// Displays a custom dialog with details about a road closure.
   void _showClosureDetails(Map<String, dynamic> closureData) {
-    // --- START OF NEW DATA EXTRACTION ---
-    // Get data with fallbacks
-    final String name = closureData['name'] ?? 'Closure Information';
-    final String type = closureData['type'] ?? 'Notice';
-    final String details = closureData['details'] ?? 'No details provided.';
-    String postedAtText = 'Report date not available.';
-
-    // Check for 'postedAt' field instead of 'validUntil'
-    if (closureData['postedAt'] != null &&
-        closureData['postedAt'] is Timestamp) {
-      final DateTime postedAt = (closureData['postedAt'] as Timestamp).toDate();
-      // Format it to be readable
-      postedAtText =
-          'Reported on: ${DateFormat.yMMMd().add_jm().format(postedAt)}';
-    }
-
-    // Dynamically choose an icon and color based on the 'type'
-    IconData closureIcon;
-    Color iconColor;
-    switch (type.toLowerCase()) {
-      case 'landslide':
-        closureIcon = Icons.warning_amber_rounded;
-        iconColor = Colors.brown.shade600;
-        break;
-      case 'event':
-        closureIcon = Icons.event;
-        iconColor = Colors.blue.shade700;
-        break;
-      case 'construction':
-        closureIcon = Icons.construction;
-        iconColor = Colors.orange.shade800;
-        break;
-      default:
-        closureIcon = Icons.traffic;
-        iconColor = Colors.red.shade700;
-    }
-    // --- END OF NEW DATA EXTRACTION ---
-
     showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          insetPadding:
-              const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
-
-          // --- UPDATED TITLE SECTION ---
-          title: Column(
-            children: [
-              Icon(
-                closureIcon, // Use the new dynamic icon
-                color: iconColor, // Use the new dynamic color
-                size: 64,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                name, // e.g., "Landslide at Km. 55"
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-
-          // --- UPDATED CONTENT SECTION ---
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // "Type" Chip
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: iconColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                child: Text(
-                  type.toUpperCase(), // e.g., "LANDSLIDE"
-                  style: TextStyle(
-                    color: iconColor,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // "Details"
-              Text(
-                details, // e.g., "Road is completely impassable..."
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 15, height: 1.4),
-              ),
-              const SizedBox(height: 16),
-              const Divider(),
-              const SizedBox(height: 8),
-
-              // "Posted At"
-              Text(
-                postedAtText, // e.g., "Reported on: Nov 5, 2025..."
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontStyle: FontStyle.italic,
-                  color: Colors.black54,
-                ),
-              ),
-            ],
-          ),
-
-          // --- (Button is the same) ---
-          actionsPadding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-          actions: [
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).primaryColor,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  textStyle: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                child: const Text('Okay, Got It'),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ),
-          ],
-        );
+        return ClosureAlertDialog(closureData: closureData);
       },
     );
   }
@@ -3417,34 +2811,91 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             },
 
             // When the user stops moving the map, rebuild the markers
+            // (This triggers your smart filtering logic)
             onCameraIdle: () {
               _rebuildMarkers();
             },
 
+            // ⭐️ NEW: Limit the camera to the Philippines ⭐️
+            cameraTargetBounds: CameraTargetBounds(
+              LatLngBounds(
+                // Southwest corner (Sulu/Tawi-Tawi area)
+                southwest: const LatLng(4.2, 116.8),
+                // Northeast corner (Batanes area)
+                northeast: const LatLng(21.5, 127.0),
+              ),
+            ),
+
+            // ⭐️ NEW: Prevent zooming out too far ⭐️
+            // Min 5: Shows the whole country. Max 20: Street level.
+            minMaxZoomPreference: const MinMaxZoomPreference(5, 20),
+
             initialCameraPosition: const CameraPosition(
-              target: _initialPosition,
+              target: _initialPosition, // Sagada
               zoom: 14,
             ),
+
             markers: _markers,
             polylines: _polylines.union(_closureLines),
-            polygons: {},
+            polygons: const {}, // Empty set for polygons
+
+            // UI Settings
             myLocationEnabled: _locationPermissionGranted,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            compassEnabled: false, // Hide compass during immersive navigation
+            myLocationButtonEnabled: false, // You have your custom button
+            zoomControlsEnabled: false, // Clean UI
+            compassEnabled: false, // You have your custom compass widget
+            mapToolbarEnabled: false, // Disable Google's "Open in Maps" buttons
           ),
           // 1. Heads Up Card (Existing)
+          // 1. Heads Up Card (Refactored)
           if (_activeHeadsUpEvent != null &&
               !_isNavigating &&
               !_isItineraryRouteVisible)
-            _buildHeadsUpCard(_activeHeadsUpEvent!),
+            HeadsUpCard(
+              // Pass the data map, not the snapshot
+              eventData: _activeHeadsUpEvent!.data() as Map<String, dynamic>,
+              itineraryName: _activeItineraryName ?? 'Your Trip',
+              onClear: _showClearActiveTripDialog,
+              onTap: () {
+                if (_activeItineraryId != null &&
+                    _activeItineraryName != null) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => ItineraryDetailScreen(
+                        itineraryId: _activeItineraryId!,
+                        itineraryName: _activeItineraryName!,
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
 
-          // 2. ⭐️ NEW: Guide Card ⭐️
-          // Only show if we have an active event today
+          // 2. Guide Card (Refactored)
           if (_activeHeadsUpEvent != null &&
               !_isNavigating &&
               !_isItineraryRouteVisible)
-            _buildGuideCard(),
+            GuideCard(
+              guide: _activeTourGuide,
+              onAssignGuide: _showGuideSelector,
+              // ⭐️ Pass the logic to remove the guide ⭐️
+              onRemoveGuide: () async {
+                if (_currentUser != null && _activeItineraryId != null) {
+                  await FirebaseFirestore.instance
+                      .collection('users')
+                      .doc(_currentUser!.uid)
+                      .collection('itineraries')
+                      .doc(_activeItineraryId)
+                      .update({
+                    'guideId': FieldValue.delete()
+                  }); // Deletes the field
+
+                  setState(() {
+                    _activeTourGuide = null;
+                  });
+                }
+              },
+            ),
 
           // 3. Compass (Updated Position)
           AnimatedPositioned(
@@ -3732,12 +3183,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
           ],
 
-          // --- ADD THIS WIDGET ---
-          // Shows the details for the selected transport route
-          // This will appear *instead* of the DiscoveryPanel
+          // Transport Details Card (Refactored)
           if (_currentTransportRouteData != null && !_isNavigating)
-            _buildTransportRouteDetailsCard(),
-          // --- END OF ADDITION ---
+            TransportDetailsCard(
+              transportData: _currentTransportRouteData,
+              onClose: _endNavigation,
+            ),
 
           // --- ⭐️ ADD THIS WIDGET ⭐️ ---
           // Shows the speedometer during driving navigation
@@ -3762,8 +3213,53 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             child: _isNavigating
-                ? _buildLiveNavigationUI()
-                : _buildNavigationPanel(),
+                // REPLACE THIS LINE:
+                // ? _buildLiveNavigationUI()
+
+                // WITH THIS NEW WIDGET:
+                ? NavigationOverlay(
+                    currentInstruction: _currentInstruction,
+                    isMuted: _isMuted,
+                    onMuteToggle: () {
+                      setState(() {
+                        _isMuted = !_isMuted;
+                        if (!_isMuted) {
+                          _flutterTts.speak(_currentInstruction);
+                        } else {
+                          _flutterTts.stop();
+                        }
+                      });
+                    },
+                    liveDuration: _liveDuration,
+                    liveEta: _liveEta,
+                    liveDistance: _liveDistance,
+                    startAddress:
+                        _navigationDetails?["startAddress"] ?? "Start",
+                    endAddress:
+                        _navigationDetails?["endAddress"] ?? "Destination",
+                    onExitNavigation: _exitLiveNavigation,
+                  )
+                // Keep the old panel for when NOT navigating
+                : NavigationPanel(
+                    state: _panelState,
+                    navigationDetails: _navigationDetails,
+                    liveDistance: _liveDistance,
+                    liveDuration: _liveDuration,
+                    isRouteLoading: _isRouteLoading,
+                    currentTravelMode: _currentTravelMode,
+                    isCustomRoutePreview: _isCustomRoutePreview,
+                    // Callbacks
+                    onStateChanged: (newState) {
+                      setState(() {
+                        _panelState = newState;
+                      });
+                    },
+                    onModeChanged: (newMode) {
+                      _updateRoute(newMode);
+                    },
+                    onCancel: _endNavigation,
+                    onStartNavigation: _enterLiveNavigation,
+                  ),
           ),
         ],
       ),
@@ -3863,308 +3359,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Icon(iconData, color: iconColor);
   }
 
-  Widget _buildNavigationPanel() {
-    switch (_panelState) {
-      case NavigationPanelState.expanded:
-        return _buildExpandedPanel();
-      case NavigationPanelState.minimized:
-        return _buildMinimizedPanel();
-      case NavigationPanelState.hidden:
-        return const SizedBox.shrink(); // An empty widget
-    }
-  }
-
-  /// The small, minimized panel at the bottom-left of the screen
-  Widget _buildMinimizedPanel() {
-    if (_navigationDetails == null) return const SizedBox.shrink();
-
-    // Using Align for cleaner positioning
-    return Align(
-      alignment: Alignment.bottomLeft,
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Card(
-          elevation: 8,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: InkWell(
-            onTap: () =>
-                setState(() => _panelState = NavigationPanelState.expanded),
-            borderRadius: BorderRadius.circular(16),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 8.0,
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min, // Keep the card compact
-                children: [
-                  const Icon(
-                    Icons.directions_car,
-                    color: Colors.blueAccent,
-                    size: 28,
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'ETA: ${_navigationDetails!["duration"]}',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                      const Text('Show details'),
-                    ],
-                  ),
-                  const SizedBox(width: 8),
-                  // Close button is now outside the tap area for details
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    color: Colors.red,
-                    onPressed: _endNavigation,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// The full-details panel sliding up from the bottom
-  /// The full-details panel sliding up from the bottom (Detailed Layout)
-  Widget _buildExpandedPanel() {
-    if (_navigationDetails == null) return const SizedBox.shrink();
-
-    final Color themeColor = const Color(0xFF3A6A55);
-
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Container(
-        margin: const EdgeInsets.all(12),
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: [
-            BoxShadow(blurRadius: 15, color: Colors.black.withOpacity(0.2)),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "Route Details",
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(
-                    Icons.keyboard_arrow_down,
-                    color: Colors.grey,
-                    size: 28,
-                  ),
-                  onPressed: () => setState(
-                    () => _panelState = NavigationPanelState.minimized,
-                  ),
-                ),
-              ],
-            ),
-            const Divider(height: 20),
-
-            // --- ⭐️ START OF ADDITION ⭐️ ---
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(
-                Icons.trip_origin, // Different icon for start
-                color: Colors.grey.shade600,
-              ),
-              title: const Text(
-                "Starting Point",
-                style: TextStyle(fontWeight: FontWeight.w500),
-              ),
-              subtitle: Text(
-                _navigationDetails!["startAddress"] ?? "Loading...",
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            // --- ⭐️ END OF ADDITION ⭐️ ---
-
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(
-                Icons.location_on,
-                color: themeColor,
-              ),
-              title: const Text(
-                "Destination",
-                style: TextStyle(fontWeight: FontWeight.w500),
-              ),
-              subtitle: Text(
-                _navigationDetails!["endAddress"] ?? "Loading address...",
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_isRouteLoading)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: CircularProgressIndicator(
-                    color: themeColor,
-                  ),
-                ),
-              )
-            else
-              Row(
-                children: [
-                  _buildInfoChip(Icons.map, _liveDistance),
-                  const SizedBox(width: 12),
-                  _buildInfoChip(Icons.timer, _liveDuration),
-                ],
-              ),
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildModeButton(
-                  "Driving",
-                  Icons.directions_car,
-                  "driving",
-                  _updateRoute,
-                ),
-                _buildModeButton(
-                  "Walking",
-                  Icons.directions_walk,
-                  "walking",
-                  _updateRoute,
-                ),
-                _buildModeButton(
-                  "Cycling",
-                  Icons.directions_bike,
-                  "bicycling",
-                  _updateRoute,
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed: _endNavigation,
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: BorderSide(color: Colors.grey.shade300),
-                      ),
-                    ),
-                    child: Text(
-                      _isCustomRoutePreview ? "Clear Route" : "Cancel",
-                    ),
-                  ),
-                ),
-                if (!_isCustomRoutePreview) ...[
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _enterLiveNavigation,
-                      icon: const Icon(Icons.navigation_rounded),
-                      label: const Text("Start"),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        foregroundColor: Colors.white,
-                        backgroundColor: Colors.green,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Helper for the small mode icons
-
-  // Helper for the Distance and Duration chips
-  Widget _buildInfoChip(IconData icon, String text) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-        decoration: BoxDecoration(
-          color: Colors.blue.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.blue, size: 20),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                text,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Refactored travel mode button
-  Widget _buildModeButton(
-    String label,
-    IconData icon,
-    String mode,
-    Function(String) onPressed,
-  ) {
-    final bool isSelected = _currentTravelMode == mode;
-    return Column(
-      children: [
-        InkWell(
-          onTap: () => onPressed(mode),
-          borderRadius: BorderRadius.circular(30),
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: isSelected ? Colors.blue : Colors.grey[200],
-              shape: BoxShape.circle,
-              border: isSelected
-                  ? Border.all(color: Colors.blueAccent, width: 2)
-                  : null,
-            ),
-            child: Icon(
-              icon,
-              color: isSelected ? Colors.white : Colors.black54,
-              size: 28,
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(label, style: const TextStyle(fontSize: 12)),
-      ],
-    );
-  }
-
   Widget _buildRoundButton({
     required IconData icon,
     required VoidCallback onPressed,
@@ -4247,131 +3441,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   // REPLACE your _buildMapStyleButton with this
 
-  Widget _buildLiveNavigationUI() {
-    return Stack(
-      children: [
-        // --- THIS IS THE CHANGE ---
-        _buildTurnByTurnBanner(), // The new top banner
-        _buildNavigationInfoBar(), // The existing bottom bar
-        // --- END OF CHANGE ---
-      ],
-    );
-  }
-
   // Add this new helper widget to your _MapScreenState
-  Widget _buildNavigationInfoBar() {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Card(
-        margin: const EdgeInsets.all(12),
-        elevation: 10,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12), // Adjusted padding
-          child: Row(
-            children: [
-              // --- ⭐️ START OF NEW LAYOUT ⭐️ ---
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // --- Row 1: Time and Distance ---
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _liveDuration, // Live duration
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              'ETA: $_liveEta', // Live ETA
-                              style: const TextStyle(
-                                  fontSize: 16, color: Colors.green),
-                            ),
-                          ],
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: Text(
-                            _liveDistance, // Live distance
-                            style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Divider(height: 16, thickness: 1),
-
-                    // --- Row 2: Start Address ---
-                    Row(
-                      children: [
-                        Icon(Icons.trip_origin,
-                            color: Colors.grey.shade600, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            // Use the data from navigationDetails
-                            _navigationDetails?["startAddress"] ??
-                                "Starting Point",
-                            style: const TextStyle(fontSize: 13),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-
-                    // --- Row 3: End Address ---
-                    Row(
-                      children: [
-                        Icon(Icons.location_on,
-                            color: Theme.of(context).primaryColor, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            // Use the data from navigationDetails
-                            _navigationDetails?["endAddress"] ?? "Destination",
-                            style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.bold),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8), // Spacer
-              // --- ⭐️ END OF NEW LAYOUT ⭐️ ---
-
-              // Exit Button (remains the same)
-              ElevatedButton(
-                onPressed: _exitLiveNavigation,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  shape: const CircleBorder(),
-                  padding: const EdgeInsets.all(16),
-                ),
-                child: const Icon(Icons.close),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   // ADD THIS WIDGET INSIDE YOUR _MapScreenState
   Widget _buildLocationButton() {
@@ -4532,131 +3602,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       },
     );
   }
-  // In lib/screens/map_homescreen.dart -> _MapScreenState
-
-  /// A new widget to display transport route details at the bottom of the screen.
-  Widget _buildTransportRouteDetailsCard() {
-    if (_currentTransportRouteData == null) return const SizedBox.shrink();
-
-    final route = _currentTransportRouteData!;
-    final String vehicleType = route['routeName'] ?? 'Transport';
-    final String fare = route['fareDetails'] ?? 'N/A';
-    final String schedule = route['schedule'] ?? 'N/A';
-
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Card(
-        margin: const EdgeInsets.all(12.0),
-        elevation: 8,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16), // Adjusted padding
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // --- FIX 1: Title and Close Button in one Row ---
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    "Route: $vehicleType",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  // --- FIX 1: Move the close button here ---
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.grey),
-                    onPressed: _endNavigation, // Re-use existing function
-                  ),
-                ],
-              ),
-              // --- FIX 2: Use ListTiles for readable text ---
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.money_outlined, color: Colors.green),
-                title: const Text("Fare Details",
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: Text(fare), // Text will wrap automatically
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading:
-                    const Icon(Icons.schedule_outlined, color: Colors.blue),
-                title: const Text("Schedule",
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: Text(schedule), // Text will wrap automatically
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTurnByTurnBanner() {
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 12.0,
-      left: 12.0,
-      right: 12.0,
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 300),
-        child: _currentInstruction.isEmpty
-            ? const SizedBox.shrink()
-            : Card(
-                elevation: 8,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                color: Theme.of(context).primaryColor,
-                child: Padding(
-                  // --- ADJUST PADDING ---
-                  padding: const EdgeInsets.only(
-                      left: 16.0, right: 8.0, top: 8.0, bottom: 8.0),
-                  // --- START OF FIX: Use a Row ---
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          _currentInstruction,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      // --- The new mute button ---
-                      IconButton(
-                        icon: Icon(
-                          _isMuted ? Icons.volume_off : Icons.volume_up,
-                          color: Colors.white,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _isMuted = !_isMuted;
-                            if (!_isMuted) {
-                              // Speak current instruction if unmuting
-                              _flutterTts.speak(_currentInstruction);
-                            } else {
-                              _flutterTts.stop();
-                            }
-                          });
-                        },
-                      ),
-                    ],
-                  ),
-                  // --- END OF FIX ---
-                ),
-              ),
-      ),
-    );
-  }
 
   /// Builds the speed indicator widget.
   Widget _buildSpeedIndicator() {
@@ -4802,299 +3747,5 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return dateA.year == dateB.year &&
         dateA.month == dateB.month &&
         dateA.day == dateB.day;
-  }
-
-  Widget _buildHeadsUpCard(DocumentSnapshot eventDoc) {
-    final event = eventDoc.data() as Map<String, dynamic>;
-    final eventTime = (event['eventTime'] as Timestamp).toDate();
-    final String eventName = event['destinationPoiName'] ?? 'Your Event';
-    final String itineraryName =
-        _activeItineraryName ?? 'Your Active Trip'; // Use the state variable
-    final String timeAgo = timeago.format(eventTime);
-    final String specificTime =
-        DateFormat.jm().format(eventTime); // e.g., "10:30 AM"
-
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 70, // Below the search bar
-      left: 12,
-      right: 12,
-      // 2. WRAP THE CARD IN AN INKWELL TO MAKE IT CLICKABLE
-      child: InkWell(
-        onTap: () {
-          // 3. ADD THE NAVIGATION LOGIC
-          if (_activeItineraryId != null && _activeItineraryName != null) {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => ItineraryDetailScreen(
-                  itineraryId: _activeItineraryId!,
-                  itineraryName: _activeItineraryName!,
-                ),
-              ),
-            );
-          }
-        },
-        borderRadius: BorderRadius.circular(16), // Match card shape
-        child: Card(
-          elevation: 8,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          clipBehavior: Clip.antiAlias, // Ensures gradient respects border
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Theme.of(context).primaryColor,
-                  Theme.of(context).primaryColor.withAlpha(230),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 12.0,
-              ),
-              child: Row(
-                children: [
-                  // 1. CHANGED THE ICON
-                  const Icon(
-                    Icons.notifications_active,
-                    color: Colors.white,
-                    size: 32,
-                  ),
-                  const SizedBox(width: 12),
-                  // Revamped Text Column
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          eventName, // Event Name is now the title
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            fontSize: 18,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          "at $specificTime ($timeAgo)", // Specific time + timeago
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        // Itinerary Name Chip
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            "From: $itineraryName",
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Close Button
-                  // This IconButton will still capture its own taps
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: _showClearActiveTripDialog,
-                    tooltip: 'Clear active trip',
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPoiTip(Map<String, dynamic> poiData) {
-    String? title;
-    String? content;
-    IconData? icon;
-
-    // Check for specific POIs by name
-    switch (poiData['name']) {
-      case 'Sumaguing Cave':
-      case 'Lumiang to Sumaguing Cave Connection':
-        title = 'What to Wear & Warning';
-        content =
-            'Wear dri-fit clothing and flip-flops, outdoor sandals, or water shoes. This tour carries physical risks and is not recommended for those with underlying conditions.';
-        icon = Icons.warning_amber_rounded;
-        break;
-      case 'Hanging Coffins':
-        title = 'Respect Sacred Ground';
-        content =
-            'This is a sacred burial ground. Please be respectful, minimize noise, and avoid shouting.';
-        icon = Icons.volume_off_outlined;
-        break;
-      case 'Sagada Pottery':
-        title = 'Pottery Tip';
-        content =
-            'Be careful not to break any pottery. Always ask permission before touching materials.';
-        icon = Icons.back_hand_outlined;
-        break;
-    }
-
-    // If no specific tip, return an empty container
-    if (title == null) {
-      return const SizedBox.shrink();
-    }
-
-    // Build the card
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(top: 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.amber.shade300),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: Colors.amber.shade800, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.amber.shade900,
-                  fontSize: 16,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            content!,
-            style: TextStyle(
-              color: Colors.black87,
-              height: 1.4,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildGuideCard() {
-    // If we have an event today, but no guide set, show "Assign Guide"
-    if (_activeTourGuide == null) {
-      return Positioned(
-        // Position it BELOW the Heads Up Card (70 + CardHeight approx 90 = 160)
-        top: MediaQuery.of(context).padding.top + 170,
-        left: 12,
-        right: 12,
-        child: Card(
-          color: Colors.orange.shade50,
-          elevation: 4,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: ListTile(
-            leading: const Icon(Icons.person_add, color: Colors.orange),
-            title: const Text("No Guide Assigned",
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            subtitle: const Text("Tap to select your guide for today.",
-                style: TextStyle(fontSize: 12)),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: _showGuideSelector,
-          ),
-        ),
-      );
-    }
-
-    // If Guide IS set, show the full card
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 170,
-      left: 12,
-      right: 12,
-      child: Card(
-        elevation: 6,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Row(
-            children: [
-              // Avatar
-              CircleAvatar(
-                radius: 24,
-                backgroundImage: _activeTourGuide!.imageUrl.isNotEmpty
-                    ? NetworkImage(_activeTourGuide!.imageUrl)
-                    : null,
-                child: _activeTourGuide!.imageUrl.isEmpty
-                    ? const Icon(Icons.person)
-                    : null,
-              ),
-              const SizedBox(width: 12),
-
-              // Info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("MY GUIDE",
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.grey,
-                            fontWeight: FontWeight.bold)),
-                    Text(
-                      _activeTourGuide!.name,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 16),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      _activeTourGuide!.phone,
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Actions
-              IconButton(
-                icon: const Icon(Icons.call, color: Colors.green),
-                onPressed: () async {
-                  final Uri launchUri =
-                      Uri(scheme: 'tel', path: _activeTourGuide!.phone);
-                  if (await canLaunchUrl(launchUri)) await launchUrl(launchUri);
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.message, color: Colors.blue),
-                onPressed: () async {
-                  final Uri launchUri =
-                      Uri(scheme: 'sms', path: _activeTourGuide!.phone);
-                  if (await canLaunchUrl(launchUri)) await launchUrl(launchUri);
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }

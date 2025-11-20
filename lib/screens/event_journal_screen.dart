@@ -1,5 +1,7 @@
 // lib/screens/event_journal_screen.dart
 
+// ignore_for_file: deprecated_member_use
+
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -30,11 +32,11 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
   bool _isLoading = false;
 
   String _eventTitle = 'Event';
-  
+
   // ⭐️ We now manage two separate lists
   List<String> _existingImageUrls = [];
   final List<XFile> _newImages = [];
-  
+
   // ⭐️ This list will track URLs to be deleted from Storage
   final List<String> _imagesToDelete = [];
 
@@ -65,7 +67,7 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
 
   Future<void> _saveJournal() async {
     setState(() => _isLoading = true);
-    
+
     final userId = FirebaseAuth.instance.currentUser?.uid;
     if (userId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -81,7 +83,7 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
         try {
           await FirebaseStorage.instance.refFromURL(url).delete();
         } catch (e) {
-          print("Failed to delete $url: $e"); // Log error but continue
+          // Log error but continue
         }
       }
 
@@ -94,8 +96,9 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
             .child(userId)
             .child('itineraries')
             .child(widget.itineraryId)
-            .child('${widget.eventDoc.id}_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        
+            .child(
+                '${widget.eventDoc.id}_${DateTime.now().millisecondsSinceEpoch}.jpg');
+
         await ref.putFile(File(image.path));
         final url = await ref.getDownloadURL();
         newUploadedUrls.add(url);
@@ -108,13 +111,13 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
       await widget.eventDoc.reference.update({
         'journalNotes': _notesController.text,
         'journalImages': allImageUrls,
-        'hasJournalEntry': allImageUrls.isNotEmpty || _notesController.text.isNotEmpty,
+        'hasJournalEntry':
+            allImageUrls.isNotEmpty || _notesController.text.isNotEmpty,
       });
 
       if (mounted) {
         Navigator.pop(context, 'Journal saved!');
       }
-
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -127,9 +130,9 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
       }
     }
   }
-  
+
   // ⭐️ --- START OF NEW HELPER METHODS --- ⭐️
-  
+
   /// A combined list for building the gallery
   List<dynamic> get _allImages => [..._existingImageUrls, ..._newImages];
 
@@ -229,7 +232,7 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
           // --- ⭐️ REVAMPED Photo Grid ⭐️ ---
           _buildPhotoGrid(),
           const SizedBox(height: 24),
-          
+
           const Text(
             'My Journal',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -275,7 +278,7 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
         ),
       );
     }
-    
+
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -294,7 +297,8 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
           imageWidget = CachedNetworkImage(
             imageUrl: item,
             fit: BoxFit.cover,
-            placeholder: (context, url) => Container(color: Colors.grey.shade200),
+            placeholder: (context, url) =>
+                Container(color: Colors.grey.shade200),
           );
         } else {
           // Display new local images
@@ -303,7 +307,7 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
             fit: BoxFit.cover,
           );
         }
-        
+
         return ClipRRect(
           borderRadius: BorderRadius.circular(8.0),
           child: Stack(
@@ -326,7 +330,8 @@ class _EventJournalScreenState extends State<EventJournalScreen> {
                       shape: BoxShape.circle,
                     ),
                     padding: const EdgeInsets.all(4.0),
-                    child: const Icon(Icons.close, color: Colors.white, size: 16),
+                    child:
+                        const Icon(Icons.close, color: Colors.white, size: 16),
                   ),
                 ),
               )

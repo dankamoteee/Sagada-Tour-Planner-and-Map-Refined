@@ -125,13 +125,20 @@ class _TourGuidesScreenState extends State<TourGuidesScreen> {
   void _showGuideDetailsDialog(BuildContext context, TourGuide guide) {
     // Helper function for launching URLs (call, email)
     Future<void> launchUrlHelper(Uri url) async {
+      // ⭐️ FIX: Use externalApplication mode for phone/sms
       if (await canLaunchUrl(url)) {
-        await launchUrl(url);
+        await launchUrl(url, mode: LaunchMode.externalApplication);
       } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not launch ${url.scheme}')),
-        );
+        // Fallback: sometimes canLaunchUrl returns false on some Android versions
+        // even if it works. Try launching anyway.
+        try {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not launch ${url.scheme}')),
+          );
+        }
       }
     }
 

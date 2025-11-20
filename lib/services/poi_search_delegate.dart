@@ -346,25 +346,32 @@ class POISearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
   }
 
   Widget _highlightMatch(String text, String q, BuildContext context) {
-    if (q.isEmpty) {
-      return Text(text, style: Theme.of(context).textTheme.titleMedium);
-    }
-    final lowerText = text.toLowerCase();
-    final lowerQ = q.toLowerCase();
-    if (!lowerText.contains(lowerQ)) {
-      return Text(text, style: Theme.of(context).textTheme.titleMedium);
-    }
-    final start = lowerText.indexOf(lowerQ);
-    final end = start + q.length;
-    final defaultStyle =
-        Theme.of(context).textTheme.titleMedium ?? const TextStyle();
-    final highlightStyle = defaultStyle.copyWith(
-      color: Theme.of(context).colorScheme.primary,
+    // ⭐️ FIX: Define a stable text style (Body Medium is standard for lists)
+    final TextStyle baseStyle = Theme.of(context).textTheme.bodyLarge ??
+        const TextStyle(fontSize: 16, color: Colors.black87);
+
+    final TextStyle highlightStyle = baseStyle.copyWith(
+      color: Theme.of(context).primaryColor,
       fontWeight: FontWeight.bold,
     );
+
+    if (q.isEmpty) {
+      return Text(text, style: baseStyle);
+    }
+
+    final lowerText = text.toLowerCase();
+    final lowerQ = q.toLowerCase();
+
+    if (!lowerText.contains(lowerQ)) {
+      return Text(text, style: baseStyle);
+    }
+
+    final start = lowerText.indexOf(lowerQ);
+    final end = start + q.length;
+
     return RichText(
       text: TextSpan(
-        style: defaultStyle,
+        style: baseStyle, // Apply base style to the whole span
         children: [
           TextSpan(text: text.substring(0, start)),
           TextSpan(text: text.substring(start, end), style: highlightStyle),
