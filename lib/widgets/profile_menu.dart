@@ -7,18 +7,16 @@ import '../screens/tour_guides_screen.dart';
 import '../screens/itineraries_list_screen.dart';
 import '../screens/guidelines_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../screens/updates_screen.dart';
 
 class ProfileMenu extends StatelessWidget {
-  // 1. Add a variable to hold the user data passed from the map screen
   final Map<String, dynamic>? userData;
-
-  // 2. Update the constructor to accept this data
-  const ProfileMenu({super.key, this.userData, required this.onDrawItinerary});
   final Function(Map<String, dynamic>) onDrawItinerary;
+
+  const ProfileMenu({super.key, this.userData, required this.onDrawItinerary});
 
   @override
   Widget build(BuildContext context) {
-    // 3. Use the dynamic data, with fallbacks for when the user is not logged in
     final userPhotoUrl = userData?['profilePictureUrl'];
     final userName = userData?['fullName'] ?? 'Guest';
     final userId = FirebaseAuth.instance.currentUser?.uid;
@@ -32,41 +30,58 @@ class ProfileMenu extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           child: Column(
             children: [
-              // --- START OF MODIFICATION ---
-              // 1. Replaced Align with a Row to hold both buttons
+              // --- ⭐️ NEW HEADER LAYOUT ⭐️ ---
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start, // Align to top
                 children: [
-                  // Left side: Back Button
+                  // LEFT: Back Button
                   IconButton(
                     icon: const Icon(Icons.arrow_back),
                     onPressed: () => Navigator.pop(context),
                   ),
-                  // Right side: New Guidelines Button
-                  IconButton(
-                    icon: const Icon(Icons.info_outlined),
-                    tooltip: "Guidelines",
-                    onPressed: () async {
-                      // 1. Make async
-                      // 2. Await result
-                      final result = await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const GuidelinesScreen(),
-                        ),
-                      );
 
-                      // 3. Check if it's an action
-                      if (result is Map<String, dynamic> &&
-                          result['action'] == 'filter') {
-                        // 4. Pop ProfileMenu and send filter back to Map
-                        Navigator.pop(context, result);
-                      }
-                    },
+                  // RIGHT: Action Buttons Grouped Together
+                  // We use a Row here so they stick to the right side
+                  Row(
+                    children: [
+                      _buildCatchyActionButton(
+                        context,
+                        icon: Icons.info_outlined,
+                        color: Colors.teal,
+                        tooltip: "Guidelines",
+                        onTap: () async {
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) => const GuidelinesScreen()),
+                          );
+                          if (result is Map<String, dynamic> &&
+                              result['action'] == 'filter') {
+                            Navigator.pop(context, result);
+                          }
+                        },
+                      ),
+                      const SizedBox(width: 8), // Spacing between buttons
+                      _buildCatchyActionButton(
+                        context,
+                        icon: Icons.campaign_outlined,
+                        color: Colors.orange,
+                        tooltip: "News",
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) => const UpdatesScreen()),
+                          );
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),
-              // --- END OF MODIFICATION ---
+              // --- END OF NEW HEADER ---
+
               const SizedBox(height: 40),
               Text(
                 userName,
@@ -79,78 +94,47 @@ class ProfileMenu extends StatelessWidget {
               const Divider(thickness: 1, height: 20),
               const SizedBox(height: 10),
 
-              // Updated "Profile" button to navigate correctly
+              // ... (Rest of your Menu Buttons: Profile, Itinerary, etc.) ...
               _buildImageButton("Profile", "assets/images/profile_bg.png", () {
-                // DO NOT pop.
+                Navigator.pop(context);
                 if (userId != null && userData != null) {
-                  // Just push the new screen.
                   Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ProfileScreen(
-                        userId: userId,
-                        userData: userData!, // <-- PASS THE DATA HERE
-                      ),
-                    ),
-                  );
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => ProfileScreen(
+                              userId: userId, userData: userData!)));
                 }
               }),
               _buildImageButton(
-                "My Itinerary",
-                "assets/images/itinerary_bg.png",
-                () async {
-                  // DO NOT pop.
-                  // Just push the new screen and await the result.
-                  final result = await Navigator.of(context).push(
+                  "My Itinerary", "assets/images/itinerary_bg.png", () async {
+                Navigator.of(context).pop();
+                final result = await Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (context) => const ItinerariesListScreen(),
-                    ),
-                  );
-
-                  // Handle the returned result
-                  if (result is Map<String, dynamic>) {
-                    // NOW pop the menu and send the data back
-                    Navigator.pop(context); // Close sheet
-                    onDrawItinerary(result); // Call your callback function
-                  }
-                  // If no result, do nothing. User is still on the profile menu.
-                },
-              ),
+                        builder: (context) => const ItinerariesListScreen()));
+                if (result is Map<String, dynamic>) {
+                  onDrawItinerary(result);
+                }
+              }),
               _buildImageButton(
-                "Recently Viewed",
-                "assets/images/recent_bg.png",
-                () async {
-                  // DO NOT pop.
-                  // Just push the new screen and await the result
-                  final result = await Navigator.push(
+                  "Recently Viewed", "assets/images/recent_bg.png", () async {
+                final result = await Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => const RecentlyViewedScreen(),
-                    ),
-                  );
-
-                  // Check if we got POI data back
-                  if (result is Map<String, dynamic>) {
-                    // NOW pop the menu AND pass the data back to the map
-                    Navigator.pop(context, result);
-                  }
-                  // If no result, do nothing. User is still on the profile menu.
-                },
-              ),
-              _buildImageButton(
-                "Tour Guides",
-                "assets/images/tourguide_bg.png",
-                () {
-                  // DO NOT pop. Just push the new screen.
-                  Navigator.push(
-                    // Navigate to the new screen
+                        builder: (context) => const RecentlyViewedScreen()));
+                if (result is Map<String, dynamic>) {
+                  Navigator.pop(context, result);
+                } else {
+                  Navigator.pop(context);
+                }
+              }),
+              _buildImageButton("Tour Guides", "assets/images/tourguide_bg.png",
+                  () {
+                Navigator.pop(context);
+                Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => const TourGuidesScreen(),
-                    ),
-                  );
-                },
-              ),
+                        builder: (context) => const TourGuidesScreen()));
+              }),
               _buildImageButton(
                 "Sagada Hotline Numbers",
                 "assets/images/hotline_bg.png",
@@ -167,7 +151,8 @@ class ProfileMenu extends StatelessWidget {
             ],
           ),
         ),
-        // AFTER
+
+        // Profile Picture (Unchanged)
         Positioned(
           top: -50,
           left: 0,
@@ -175,36 +160,50 @@ class ProfileMenu extends StatelessWidget {
           child: Center(
             child: CircleAvatar(
               radius: 60,
-              // 1. Background color is now conditional
               backgroundColor: (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
-                  ? Colors.white // White border for the image
-                  : const Color(0xFF3A6A55), // Theme color for the initial
+                  ? Colors.white
+                  : const Color(0xFF3A6A55),
               backgroundImage: (userPhotoUrl != null && userPhotoUrl.isNotEmpty)
-                  ? CachedNetworkImageProvider(
-                      userPhotoUrl,
-                    ) // <-- Changed to this
+                  ? CachedNetworkImageProvider(userPhotoUrl)
                   : null,
-              // 2. Child logic now checks for the user's name
               child: (userPhotoUrl == null || userPhotoUrl.isEmpty)
                   ? (userName.isNotEmpty && userName != 'Guest')
-                      ? Text(
-                          userName[0].toUpperCase(),
+                      ? Text(userName[0].toUpperCase(),
                           style: const TextStyle(
-                            fontSize: 60,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(
-                          Icons.person,
-                          size: 60,
-                          color: Colors.grey,
-                        )
+                              fontSize: 60,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white))
+                      : const Icon(Icons.person, size: 60, color: Colors.grey)
                   : null,
             ),
           ),
         ),
       ],
+    );
+  }
+
+  // ⭐️ NEW HELPER FOR CATCHY BUTTONS ⭐️
+  Widget _buildCatchyActionButton(BuildContext context,
+      {required IconData icon,
+      required Color color,
+      required String tooltip,
+      required VoidCallback onTap}) {
+    return Material(
+      color: color.withOpacity(0.1), // Light background
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: color.withOpacity(0.5), width: 1), // Colored border
+          ),
+          child: Icon(icon, color: color, size: 26), // Colored Icon
+        ),
+      ),
     );
   }
 

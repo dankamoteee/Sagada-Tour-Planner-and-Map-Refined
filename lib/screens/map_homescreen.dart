@@ -29,6 +29,8 @@ import 'package:maps_toolkit/maps_toolkit.dart' as map_tools;
 import 'guidelines_screen.dart';
 import 'itinerary_detail_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../models/tour_guide_model.dart';
 
 // Enum to manage the panel's visibility state
 enum NavigationPanelState { hidden, minimized, expanded }
@@ -100,6 +102,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double _currentSpeed = 0.0; // 👈 ADD THIS
   List<Map<String, dynamic>> _nearbyPois = []; // 👈 ADD THIS LINE
   // --- END: ADD FOR TURN-BY-TURN ---
+  TourGuide? _activeTourGuide; // Stores the current guide for the active trip
 
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
@@ -116,12 +119,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final List<String> _filters = [
     'All',
     'Tourist Spots',
+    'Food & Dining', // ⭐️ ADD THIS
     'Business Establishments',
     'Accommodations',
     'Transport Terminals',
     'Agencies and Offices',
-    'Services', // <-- ADD THIS (for ATMs)
-    'Parking', // <-- ADD THIS
+    'Services',
+    'Parking',
   ];
   String _selectedFilter = 'All';
 
@@ -532,24 +536,61 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _rebuildMarkers() async {
-    // --- START OF FIX ---
-    // If any route (itinerary, regular navigation, or transport) is visible,
-    // do not rebuild the base POI markers, as this will wipe out our route pins.
     if (_isItineraryRouteVisible ||
         _navigationDetails != null ||
         _currentTransportRouteData != null) {
       return;
     }
-    // --- END OF FIX ---
 
-    final bool showLabels = _currentZoom > _labelZoomThreshold;
+    // ⭐️ OPTIMIZATION 1: ZOOM FILTERING ⭐️
+
+    // Decide what categories to show based on zoom level
+
+    List<Map<String, dynamic>> visiblePois = [];
+
+    bool showLabels = false;
+
+    if (_currentZoom < 13) {
+      // Zoom 0-12 (Far): Show ONLY major Tourist Spots
+
+      // This keeps the map clean at the province level
+
+      visiblePois =
+          _allPoiData.where((p) => p['type'] == 'Tourist Spots').toList();
+
+      showLabels = false; // No text labels
+    } else if (_currentZoom < 15.5) {
+      // Zoom 13-15 (Town View): Add Hotels & Food
+
+      // Good for getting a general vibe of the town
+
+      visiblePois = _allPoiData.where((p) {
+        final t = p['type'];
+
+        return t == 'Tourist Spots' ||
+            t == 'Accommodations' ||
+            t == 'Food & Dining' ||
+            t == 'Transport Terminals'; // Important for arrival
+      }).toList();
+
+      showLabels = false; // Still too crowded for text
+    } else {
+      // Zoom 16+ (Street View): Show EVERYTHING
+
+      visiblePois = _allPoiData;
+
+      showLabels = true; // Now we can show text labels
+    }
+
+    // Only process the VISIBLE list (saves processing power!)
 
     final markers = await Future.wait(
-      _allPoiData.map((data) async {
+      visiblePois.map((data) async {
         final markerService = MarkerService();
+
         return await markerService.createMarker(
           data: data,
-          showLabel: showLabels, // Pass the flag here
+          showLabel: showLabels,
           onTap: (data) {
             _showPoiSheet(
               name: data['name'] ?? 'Unnamed',
@@ -2520,53 +2561,52 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ⭐️ MODIFIED: Fetch Guide Info when Itinerary Loads ⭐️
   Future<void> _loadActiveItineraryStream({bool forceReload = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final newActiveId = prefs.getString('activeItineraryId');
-    // ⭐️ ADD THIS LINE
     final newActiveName = prefs.getString('activeItineraryName');
     final user = FirebaseAuth.instance.currentUser;
 
-    // We modify this check to allow a forced reload
     if (!forceReload &&
         newActiveId == _activeItineraryId &&
         _activeItineraryStream != null) {
       return;
     }
 
-    // Cancel any existing stream listener before creating a new one
     _activeItineraryStream?.listen(null).cancel();
 
     if (user != null && newActiveId != null) {
       if (mounted) {
         setState(() {
           _activeItineraryId = newActiveId;
-          // ⭐️ ADD THIS LINE
-          _activeItineraryName =
-              newActiveName ?? 'My Itinerary'; // Save the name
+          _activeItineraryName = newActiveName ?? 'My Itinerary';
 
+          // 1. Listen for Events (Existing logic)
           _activeItineraryStream = FirebaseFirestore.instance
               .collection('users')
               .doc(user.uid)
               .collection('itineraries')
               .doc(_activeItineraryId)
               .collection('events')
-              .where('eventTime',
-                  isGreaterThanOrEqualTo:
-                      Timestamp.now()) // This query is the key
+              .where('eventTime', isGreaterThanOrEqualTo: Timestamp.now())
               .orderBy('eventTime')
               .snapshots();
 
           _activeItineraryStream?.listen(_updateHeadsUpEvent);
         });
+
+        // ⭐️ 2. NEW: Fetch Itinerary Details to find the Guide ⭐️
+        _fetchActiveGuideDetails(user.uid, newActiveId);
       }
     } else {
       if (mounted) {
         setState(() {
           _activeItineraryId = null;
-          _activeItineraryName = null; // ⭐️ ADD THIS LINE
+          _activeItineraryName = null;
           _activeItineraryStream = null;
           _activeHeadsUpEvent = null;
+          _activeTourGuide = null; // Clear guide
         });
       }
     }
@@ -2732,6 +2772,40 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     // We don't check permissions here, _goToMyLocation() will
     // handle the system permission pop-up if needed.
+  }
+
+  Future<void> _fetchActiveGuideDetails(
+      String userId, String itineraryId) async {
+    try {
+      // 1. Get the itinerary document to see if a guideId is saved
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('itineraries')
+          .doc(itineraryId)
+          .get();
+
+      if (doc.exists && doc.data()!.containsKey('guideId')) {
+        final String guideId = doc.data()!['guideId'];
+        if (guideId.isNotEmpty) {
+          // 2. Fetch the actual Tour Guide details
+          final guideDoc = await FirebaseFirestore.instance
+              .collection('tourGuides')
+              .doc(guideId)
+              .get();
+
+          if (guideDoc.exists && mounted) {
+            setState(() {
+              _activeTourGuide = TourGuide.fromFirestore(guideDoc);
+            });
+          }
+        }
+      } else {
+        if (mounted) setState(() => _activeTourGuide = null);
+      }
+    } catch (e) {
+      print("Error fetching guide: $e");
+    }
   }
 
 // ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
@@ -3241,10 +3315,95 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
+  void _showGuideSelector() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          height: 500,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Select Your Guide",
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              Expanded(
+                child: StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('tourGuides')
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData)
+                      return const Center(child: CircularProgressIndicator());
+
+                    final guides = snapshot.data!.docs
+                        .map((d) => TourGuide.fromFirestore(d))
+                        .toList();
+
+                    return ListView.builder(
+                      itemCount: guides.length,
+                      itemBuilder: (context, index) {
+                        final guide = guides[index];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundImage: guide.imageUrl.isNotEmpty
+                                ? NetworkImage(guide.imageUrl)
+                                : null,
+                            child: guide.imageUrl.isEmpty
+                                ? const Icon(Icons.person)
+                                : null,
+                          ),
+                          title: Text(guide.name,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text(guide.org),
+                          onTap: () async {
+                            // 1. Save selection to Itinerary
+                            if (_currentUser != null &&
+                                _activeItineraryId != null) {
+                              await FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(_currentUser!.uid)
+                                  .collection('itineraries')
+                                  .doc(_activeItineraryId)
+                                  .update({'guideId': guide.id});
+
+                              // 2. Update local state
+                              setState(() {
+                                _activeTourGuide = guide;
+                              });
+                            }
+                            Navigator.pop(context);
+                          },
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // === UI ===
   @override
   Widget build(BuildContext context) {
     final double paddingTop = MediaQuery.of(context).padding.top;
+
+    // Calculate where the Compass should be.
+    // It needs to move down if we add more cards.
+    double compassTop = paddingTop + 70; // Default
+    if (_activeHeadsUpEvent != null) compassTop += 90; // Push down for Heads Up
+    if (_activeHeadsUpEvent != null)
+      compassTop += 90; // Push down for Guide Card (approx)
+
     return Scaffold(
       body: Stack(
         children: [
@@ -3274,25 +3433,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             zoomControlsEnabled: false,
             compassEnabled: false, // Hide compass during immersive navigation
           ),
+          // 1. Heads Up Card (Existing)
           if (_activeHeadsUpEvent != null &&
               !_isNavigating &&
               !_isItineraryRouteVisible)
             _buildHeadsUpCard(_activeHeadsUpEvent!),
-          // --- PASTE THE COMPASS WIDGET HERE AND UPDATE IT ---
-          // --- Compass Widget (now animated) ---
+
+          // 2. ⭐️ NEW: Guide Card ⭐️
+          // Only show if we have an active event today
+          if (_activeHeadsUpEvent != null &&
+              !_isNavigating &&
+              !_isItineraryRouteVisible)
+            _buildGuideCard(),
+
+          // 3. Compass (Updated Position)
           AnimatedPositioned(
-            // ⭐️ --- START OF NEW LOGIC --- ⭐️
             top: (_isNavigating && _currentInstruction.isNotEmpty)
-                ? (paddingTop + 120) // Pushed down by turn-by-turn banner
-                : (_activeHeadsUpEvent != null &&
-                        !_isNavigating &&
-                        !_isItineraryRouteVisible)
-                    ? (paddingTop + 185) // Pushed down by heads-up card
-                    : (paddingTop + 70), // Default position
-            // ⭐️ --- END OF NEW LOGIC --- ⭐️
+                ? (paddingTop + 120)
+                : compassTop, // Use calculated top
             right: 12,
-            duration: const Duration(milliseconds: 300), // Animation duration
-            curve: Curves.easeInOut, // Animation curve
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
             child: CompassWidget(),
           ),
           // --- END OF COMPASS FIX ---
@@ -3680,6 +3841,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     switch (filter) {
       case 'Tourist Spots':
         iconData = Icons.landscape_outlined;
+        break;
+      case 'Food & Dining': // ⭐️ ADD THIS
+        iconData = Icons.restaurant_menu; // Nice knife & fork icon
         break;
       case 'Business Establishments':
         iconData = Icons.store_outlined;
@@ -4544,16 +4708,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .collection('roadClosures')
         .snapshots()
         .listen((snapshot) {
-      // We are now creating a Set of Polylines
       Set<Polyline> newLines = {};
 
       for (final doc in snapshot.docs) {
         final data = doc.data();
-        final List<dynamic> areaPoints = data['area'] ?? [];
+        List<LatLng> points = [];
 
-        // We assume 'area' now contains 2 points (start/end)
-        if (areaPoints.isNotEmpty) {
-          final List<LatLng> lineCoords = areaPoints.map((point) {
+        // ⭐️ 1. CHECK FOR SMOOTH POLYLINE (Priority) ⭐️
+        final String? encodedPolyline = data['polyline'] as String?;
+        if (encodedPolyline != null && encodedPolyline.isNotEmpty) {
+          // Decode the Google Maps string into coordinates
+          final List<PointLatLng> decoded =
+              PolylinePoints.decodePolyline(encodedPolyline);
+          points = decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
+        }
+
+        // ⭐️ 2. FALLBACK TO MANUAL POINTS (If no polyline) ⭐️
+        else {
+          final List<dynamic> areaPoints = data['area'] ?? [];
+          points = areaPoints.map((point) {
             if (point is GeoPoint) {
               return LatLng(point.latitude, point.longitude);
             } else if (point is Map) {
@@ -4562,19 +4735,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             }
             return const LatLng(0, 0);
           }).toList();
+        }
 
-          // Create a Polyline instead of a Polygon
+        // ⭐️ 3. DRAW THE LINE ⭐️
+        if (points.isNotEmpty) {
           newLines.add(
             Polyline(
               polylineId: PolylineId(doc.id),
-              points: lineCoords,
+              points: points,
               color: Colors.red.shade700,
-              width: 6, // Make it nice and thick
-              // Make it dashed to show it's a closure
+              width: 6,
+              // Use dashes for manual lines, solid for auto lines (optional preference)
               patterns: [PatternItem.dash(20), PatternItem.gap(10)],
               consumeTapEvents: true,
               onTap: () {
-                _showClosureDetails(data); // Your existing dialog function
+                _showClosureDetails(data);
               },
             ),
           );
@@ -4583,7 +4758,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       if (mounted) {
         setState(() {
-          // Update the new state variable
           _closureLines = newLines;
         });
       }
@@ -4821,6 +4995,105 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildGuideCard() {
+    // If we have an event today, but no guide set, show "Assign Guide"
+    if (_activeTourGuide == null) {
+      return Positioned(
+        // Position it BELOW the Heads Up Card (70 + CardHeight approx 90 = 160)
+        top: MediaQuery.of(context).padding.top + 170,
+        left: 12,
+        right: 12,
+        child: Card(
+          color: Colors.orange.shade50,
+          elevation: 4,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: ListTile(
+            leading: const Icon(Icons.person_add, color: Colors.orange),
+            title: const Text("No Guide Assigned",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            subtitle: const Text("Tap to select your guide for today.",
+                style: TextStyle(fontSize: 12)),
+            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+            onTap: _showGuideSelector,
+          ),
+        ),
+      );
+    }
+
+    // If Guide IS set, show the full card
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 170,
+      left: 12,
+      right: 12,
+      child: Card(
+        elevation: 6,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Row(
+            children: [
+              // Avatar
+              CircleAvatar(
+                radius: 24,
+                backgroundImage: _activeTourGuide!.imageUrl.isNotEmpty
+                    ? NetworkImage(_activeTourGuide!.imageUrl)
+                    : null,
+                child: _activeTourGuide!.imageUrl.isEmpty
+                    ? const Icon(Icons.person)
+                    : null,
+              ),
+              const SizedBox(width: 12),
+
+              // Info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("MY GUIDE",
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.bold)),
+                    Text(
+                      _activeTourGuide!.name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      _activeTourGuide!.phone,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Actions
+              IconButton(
+                icon: const Icon(Icons.call, color: Colors.green),
+                onPressed: () async {
+                  final Uri launchUri =
+                      Uri(scheme: 'tel', path: _activeTourGuide!.phone);
+                  if (await canLaunchUrl(launchUri)) await launchUrl(launchUri);
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.message, color: Colors.blue),
+                onPressed: () async {
+                  final Uri launchUri =
+                      Uri(scheme: 'sms', path: _activeTourGuide!.phone);
+                  if (await canLaunchUrl(launchUri)) await launchUrl(launchUri);
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

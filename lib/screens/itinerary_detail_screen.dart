@@ -361,7 +361,9 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
 
     // --- Case 1: Custom Event ---
     if (poiId == null) {
+      // ... (This part remains unchanged) ...
       return Dismissible(
+        // ... existing custom event code ...
         key: ValueKey(eventDoc.id),
         direction: DismissDirection.endToStart,
         onDismissed: (_) => _deleteEvent(eventDoc.id),
@@ -396,7 +398,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                if (journalWidget != null) journalWidget, // ⭐️ ADDED THIS
+                if (journalWidget != null) journalWidget,
               ],
             ),
             trailing: highlightIcon,
@@ -406,7 +408,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
       );
     }
 
-    // --- Case 2: POI Event ---
+    // --- Case 2: POI Event (UPDATED) ---
     return Dismissible(
       key: ValueKey(eventDoc.id),
       direction: DismissDirection.endToStart,
@@ -415,18 +417,38 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
       child: FutureBuilder<DocumentSnapshot>(
         future: FirebaseFirestore.instance.collection('POIs').doc(poiId).get(),
         builder: (context, poiSnapshot) {
+          // ⭐️ FIX 1: Check if data exists safely ⭐️
+          bool exists = poiSnapshot.hasData &&
+              poiSnapshot.data != null &&
+              poiSnapshot.data!.exists;
+
+          String poiName = 'Loading...';
+          Map<String, dynamic>? poiData;
+
+          if (exists) {
+            poiData = poiSnapshot.data!.data() as Map<String, dynamic>;
+            poiName = poiData['name'] ?? 'Unnamed';
+          } else if (poiSnapshot.connectionState == ConnectionState.done) {
+            // If done loading but !exists, it means it was deleted
+            poiName = 'Unknown Place (Deleted)';
+          }
+
           return Card(
             color: cardColor,
             margin: const EdgeInsets.symmetric(vertical: 6.0),
             clipBehavior: Clip.antiAlias,
             child: ListTile(
               contentPadding: const EdgeInsets.all(10),
+              // We pass the snapshot to _buildPoiImage; it handles nulls internally, but let's be safe
               leading: _buildPoiImage(poiSnapshot),
               title: Text(
-                poiSnapshot.hasData
-                    ? (poiSnapshot.data!['name'] ?? 'Loading...')
-                    : 'Loading...',
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                poiName, // ⭐️ Uses the safe variable
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  // Grey out text if deleted
+                  color: exists ? Colors.black : Colors.grey,
+                  fontStyle: exists ? FontStyle.normal : FontStyle.italic,
+                ),
               ),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -447,16 +469,17 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
                       style: const TextStyle(fontSize: 12),
                     ),
                   ],
-                  if (journalWidget != null) journalWidget, // ⭐️ ADDED THIS
+                  if (journalWidget != null) journalWidget,
                 ],
               ),
               trailing: highlightIcon,
-              onTap: () => _navigateToEditor(
-                eventDoc: eventDoc,
-                poiData: poiSnapshot.hasData
-                    ? poiSnapshot.data!.data() as Map<String, dynamic>
-                    : null,
-              ),
+              // ⭐️ FIX 2: Disable tap if deleted ⭐️
+              onTap: exists
+                  ? () => _navigateToEditor(
+                        eventDoc: eventDoc,
+                        poiData: poiData,
+                      )
+                  : null,
             ),
           );
         },
