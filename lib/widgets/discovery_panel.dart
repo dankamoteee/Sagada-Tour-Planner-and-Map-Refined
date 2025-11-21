@@ -1,16 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-
+import 'dart:math'; // Import for shuffling
 import 'poi_card.dart';
 
 class DiscoveryPanel extends StatefulWidget {
   final Function(Map<String, dynamic>) onPoiSelected;
-  final List<Map<String, dynamic>> nearbyPois; // This is correct!
+  final List<Map<String, dynamic>> nearbyPois;
 
   const DiscoveryPanel({
     super.key,
     required this.onPoiSelected,
-    required this.nearbyPois, // This is correct!
+    required this.nearbyPois,
   });
 
   @override
@@ -20,40 +20,73 @@ class DiscoveryPanel extends StatefulWidget {
 class _DiscoveryPanelState extends State<DiscoveryPanel> {
   bool _isExpanded = false;
 
-  // --- START OF CHANGES ---
-
-  // We ONLY keep the state for "Popular". "Nearby" is now handled by the MapScreen.
-  List<Map<String, dynamic>> _popularPois = [];
-  bool _isLoadingPopular = true;
-  bool _hasFetchedPopular = false; // Changed variable name for clarity
+  List<Map<String, dynamic>> _dynamicPois = [];
+  bool _isLoadingDynamic = true;
+  bool _hasFetchedDynamic = false;
+  String _dynamicTitle = "Discover"; // Default title
+  IconData _dynamicIcon = Icons.explore;
 
   @override
   void initState() {
     super.initState();
-    // Data fetching will be triggered on first expansion
+    _determineTimeContext(); // Set the title/icon immediately
   }
 
-  // Simplified to only fetch "Popular"
+  // 1. Determine Time of Day Context
+  void _determineTimeContext() {
+    final hour = DateTime.now().hour;
+
+    setState(() {
+      if (hour >= 5 && hour < 11) {
+        // Morning: 5 AM - 11 AM
+        _dynamicTitle = "Good Morning! ☕";
+        _dynamicIcon = Icons.wb_sunny_outlined;
+      } else if (hour >= 11 && hour < 17) {
+        // Day: 11 AM - 5 PM
+        _dynamicTitle = "Adventure Time ⛰️";
+        _dynamicIcon = Icons.hiking;
+      } else {
+        // Evening: 5 PM onwards
+        _dynamicTitle = "Dinner & Chill 🌙";
+        _dynamicIcon = Icons.nightlife;
+      }
+    });
+  }
+
   void _fetchDataIfNeeded() {
-    if (!_hasFetchedPopular) {
-      _fetchPopularPois();
-      _hasFetchedPopular = true;
+    if (!_hasFetchedDynamic) {
+      _fetchDynamicPois();
+      _hasFetchedDynamic = true;
     }
   }
 
-  // This function for "Popular" stays the same
-  Future<void> _fetchPopularPois() async {
+  // 2. Fetch Data based on Context
+  Future<void> _fetchDynamicPois() async {
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('POIs')
-          .where('recommended', isEqualTo: true)
-          .get();
+      final hour = DateTime.now().hour;
+      Query query = FirebaseFirestore.instance.collection('POIs');
+
+      // Apply filters based on time
+      if (hour >= 5 && hour < 11) {
+        // Morning: Show Food (Breakfast/Coffee)
+        query = query.where('type', isEqualTo: 'Food & Dining');
+      } else if (hour >= 11 && hour < 17) {
+        // Day: Show Tourist Spots
+        query = query.where('type', isEqualTo: 'Tourist Spots');
+      } else {
+        // Evening: Show Food (Dinner)
+        query = query.where('type', isEqualTo: 'Food & Dining');
+      }
+
+      // Limit to 20 so we have enough to shuffle, but don't download everything
+      final snapshot = await query.limit(30).get();
 
       final pois = snapshot.docs.map((doc) {
-        final data = doc.data();
+        final data = doc.data() as Map<String, dynamic>;
+
+        // Safe Coordinate Parsing (reused from your logic)
         dynamic coordsData = data['coordinates'];
         double? lat, lng;
-
         if (coordsData is GeoPoint) {
           lat = coordsData.latitude;
           lng = coordsData.longitude;
@@ -69,42 +102,39 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
           'lng': lng,
         };
       }).toList();
+
+      // 3. Shuffle to make it interesting every time
+      pois.shuffle(Random());
+
       if (mounted) {
         setState(() {
-          _popularPois = pois;
-          _isLoadingPopular = false;
+          _dynamicPois = pois; // Display the shuffled list
+          _isLoadingDynamic = false;
         });
       }
     } catch (e) {
-      print("Error fetching popular POIs: $e");
-      if (mounted) setState(() => _isLoadingPopular = false);
+      print("Error fetching dynamic POIs: $e");
+      if (mounted) setState(() => _isLoadingDynamic = false);
     }
   }
-
-  // 🛑 The old _fetchNearbyPois() function is COMPLETELY REMOVED.
-  // 🛑 The old _nearbyPois = [] and _isLoadingNearby = true are COMPLETELY REMOVED.
-
-  // --- END OF CHANGES ---
 
   Widget _buildPoiCarousel(List<Map<String, dynamic>> pois, bool isLoading) {
     if (isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // --- START OF FIX ---
-    // Use a more helpful message if the list (which is now passed in) is empty.
     if (pois.isEmpty) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(16.0),
           child: Text(
-            "No places found.\nTry moving around the map to refresh.",
+            "No suggestions right now.\nTry browsing the map!",
             textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey),
           ),
         ),
       );
     }
-    // --- END OF FIX ---
 
     return ListView.builder(
       scrollDirection: Axis.horizontal,
@@ -122,10 +152,12 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final themeColor = Theme.of(context).primaryColor;
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOut,
-      height: _isExpanded ? 280 : 65,
+      height: _isExpanded ? 300 : 70, // Slightly taller for better tabs
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: const BorderRadius.only(
@@ -143,48 +175,65 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
       child: ClipRect(
         child: Column(
           children: [
-            // The Pull Tab (no changes here)
+            // The Pull Tab
             GestureDetector(
               onTap: () {
                 setState(() {
                   _isExpanded = !_isExpanded;
                 });
                 if (_isExpanded) {
-                  _fetchDataIfNeeded(); // This now only fetches "Popular"
+                  _fetchDataIfNeeded();
                 }
               },
               child: Container(
-                height: 65,
+                height: 70,
                 color: Colors.transparent,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
+                    // Left: Dynamic Title
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          'Discover Places',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Theme.of(context).primaryColor,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          _isExpanded
-                              ? Icons.keyboard_arrow_down
-                              : Icons.keyboard_arrow_up,
-                          color: Theme.of(context).primaryColor,
+                        Icon(_dynamicIcon, color: themeColor),
+                        const SizedBox(width: 12),
+                        Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Discover Sagada',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              _dynamicTitle, // "Good Morning", etc.
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: themeColor,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
+                    ),
+                    // Right: Arrow
+                    Icon(
+                      _isExpanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_up,
+                      color: themeColor,
                     ),
                   ],
                 ),
               ),
             ),
 
-            // The content area
+            // The Content Area
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
@@ -199,27 +248,46 @@ class _DiscoveryPanelState extends State<DiscoveryPanel> {
                       length: 2,
                       child: Column(
                         children: [
-                          const TabBar(
-                            tabs: [
-                              Tab(text: "Popular in Sagada"),
-                              Tab(text: "Nearby"),
-                            ],
+                          // Custom Tab Bar styling
+                          Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 16),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: TabBar(
+                              labelColor: themeColor,
+                              unselectedLabelColor: Colors.grey,
+                              indicatorSize: TabBarIndicatorSize.tab,
+                              indicator: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(10),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.05),
+                                    blurRadius: 4,
+                                  )
+                                ],
+                              ),
+                              tabs: const [
+                                Tab(text: "Suggestions"),
+                                Tab(text: "Nearby"),
+                              ],
+                            ),
                           ),
                           Expanded(
                             child: TabBarView(
                               children: [
-                                // "Popular" tab uses its own internal state
+                                // Tab 1: Time-Based Dynamic List
                                 _buildPoiCarousel(
-                                  _popularPois,
-                                  _isLoadingPopular,
+                                  _dynamicPois,
+                                  _isLoadingDynamic,
                                 ),
 
-                                // --- ⭐️ THIS IS THE FIX ⭐️ ---
-                                // "Nearby" tab now uses the list from MapScreen.
-                                // It's never "loading" because MapScreen already did the work.
+                                // Tab 2: Nearby List (Passed from Parent)
                                 _buildPoiCarousel(
-                                  widget.nearbyPois, // 👈 Use the widget's list
-                                  false, // 👈 Pass 'false' for loading
+                                  widget.nearbyPois,
+                                  false,
                                 ),
                               ],
                             ),

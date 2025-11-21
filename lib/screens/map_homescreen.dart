@@ -2,9 +2,11 @@
 
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import '../services/marker_service.dart';
 import '../services/poi_search_delegate.dart';
 import '../widgets/profile_menu.dart';
@@ -36,6 +38,7 @@ import '../widgets/closure_alert_dialog.dart';
 import '../widgets/poi_tip_card.dart';
 import '../services/route_service.dart';
 import '../services/user_data_service.dart';
+import '../services/tutorial_service.dart';
 import '../widgets/responsible_tourism_dialog.dart';
 import '../widgets/enable_location_dialog.dart';
 import '../widgets/guide_card.dart';
@@ -58,6 +61,10 @@ String _currentTravelMode = "driving"; // driving by default
 LatLng? _lastDestination; // remember last POI clicked
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
+  // ⭐️ NEW: Keys for Feature Discovery
+  final GlobalKey _searchKey = GlobalKey();
+  final GlobalKey _filterKey = GlobalKey();
+  final GlobalKey _transportKey = GlobalKey();
   bool _isFollowingUser = true;
   Map<String, String>? _itinerarySummary; // 👈 ADD THIS
   String? _itineraryTitle;
@@ -90,11 +97,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<Position>? _positionStreamSubscription;
   List<Map<String, dynamic>> _allPoiData = []; // To cache Firestore data
   double _currentZoom = 14.0; // To track the current zoom level
+  MapType _currentMapType = MapType.normal; // Start with the default view
   // --- START: ADD FOR TURN-BY-TURN ---
   final RouteService _routeService = RouteService();
   final MarkerService _markerService = MarkerService();
   final UserDataService _userDataService = UserDataService();
   late FlutterTts _flutterTts; // The TTS engine
+// ⭐️ NEW: For Offline Mode
+  bool _isOffline = false;
+  // ignore: unused_field
+  StreamSubscription? _connectivitySubscription;
+  // ⭐️ NEW: Track previous offline state for "Restored" message
+  bool _wasOffline = false;
+
+  // ⭐️ NEW: Track if GPS is physically enabled on the phone
+  bool _isLocationServiceEnabled = false;
+  StreamSubscription<ServiceStatus>? _serviceStatusSubscription;
+  // ⭐️ NEW: For Out-of-Bounds Warning
+  bool _showRecenterButton = false;
+  // Define Sagada Bounds (Rough box around the municipality)
+  final LatLngBounds _sagadaBounds = LatLngBounds(
+    southwest: const LatLng(17.05, 120.85),
+    northeast: const LatLng(17.13, 120.95),
+  );
+
   // ⭐️ --- START OF NEW "HEADS-UP" VARIABLES --- ⭐️
   Stream<QuerySnapshot>? _activeItineraryStream;
   String? _activeItineraryId;
@@ -110,7 +136,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _nearbyPois = []; // 👈 ADD THIS LINE
   // --- END: ADD FOR TURN-BY-TURN ---
   TourGuide? _activeTourGuide; // Stores the current guide for the active trip
-
+  String?
+      _highlightedPoiId; // ⭐️ NEW: Store the ID of the currently highlighted POI ⭐️
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
   Set<Polyline> _closureLines = {}; // Renamed to store lines
@@ -369,6 +396,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             color: Colors.orange.shade700,
             width: 6,
             points: mainRoutePoints,
+
+            // ⭐️ NEW: Add Tap Interaction ⭐️
+            consumeTapEvents: true,
+            onTap: () {
+              // Ensure we have a summary before displaying
+              if (_itinerarySummary != null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      "Route Summary: ${_itinerarySummary!['distance']} | ${_itinerarySummary!['duration']}",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    duration: const Duration(seconds: 3),
+                    behavior: SnackBarBehavior
+                        .floating, // Floating style looks cleaner
+                  ),
+                );
+              }
+            },
+            // ⭐️ END of Tap Interaction ⭐️
           ),
         );
 
@@ -455,7 +502,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   coords.longitude,
                 ),
                 icon: await _createNumberedCircleMarker(markerNum),
-                zIndex: 2,
+                zIndex: 3,
               ),
             );
             markerNum++;
@@ -592,6 +639,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           data: data,
         );
       },
+      highlightedId: _highlightedPoiId, // ⭐️ PASS THE HIGHLIGHTED ID ⭐️
     );
 
     // 3. Preserve existing Route Markers
@@ -737,7 +785,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           position: origin,
           icon: startIcon,
           anchor: const Offset(0.5, 0.5),
-          zIndex: 1,
+          zIndex: 3,
         ),
       );
       _markers.add(
@@ -1069,22 +1117,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _stopCompassMode({bool resetBearing = true}) async {
     _compassSubscription?.cancel();
-    _compassSubscription = null; // Clear the subscription
+    _compassSubscription = null;
     if (resetBearing) {
-      // Set the flag before animating
       _isAnimatingCamera = true;
-      // Optionally reset the map to point North
       await _mapController?.animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
             target: _lastKnownPosition ?? _initialPosition,
             zoom: 16,
             bearing: 0,
-            tilt: 0,
+            tilt: 45.0, // ⭐️ Change from 0 to 45.0
           ),
         ),
       );
-      // Unset the flag after animating
       _isAnimatingCamera = false;
     }
   }
@@ -1276,7 +1321,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           Polyline(
             polylineId: PolylineId(routeData['routeName'] ?? "transport_route"),
             color: Colors.purple,
-            width: 8,
+            width: 4,
             jointType: JointType.round,
             startCap: Cap.roundCap,
             endCap: Cap.roundCap,
@@ -1284,6 +1329,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             consumeTapEvents: true,
             onTap: () {
               print("Polyline for '${routeData['routeName']}' was tapped!");
+              // This should call your existing dialog function
               _showTransportRouteDetailsDialog();
             },
           ),
@@ -1319,18 +1365,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     _loadActiveItineraryStream();
     WidgetsBinding.instance.addObserver(this);
-    // --- ADD THIS ---
     _flutterTts = FlutterTts();
-    // --- END ---
 
-    // Assign to the existing class variable, don't create a new one
-    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((
-      User? user,
-    ) {
+    _authSubscription =
+        FirebaseAuth.instance.authStateChanges().listen((User? user) {
       setState(() {
         _currentUser = user;
       });
       if (user != null) {
+        // ⭐️ MAKE SURE THIS LINE IS HERE ⭐️
         _listenToUserData(user.uid);
       } else {
         _userDataSubscription?.cancel();
@@ -1355,9 +1398,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     // ⭐️ --- END OF ADDITION --- ⭐️
 
-    /*WidgetsBinding.instance.addPostFrameCallback((_) {
-      _goToMyLocation();
-    });*/
+    // ⭐️ 1. Listen for Internet Connection changes
+    _checkConnectivity();
+
+    // ⭐️ 2. Schedule Feature Discovery (Coach Marks)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showFeatureDiscovery();
+    });
+    // ⭐️ NEW: Listen for GPS Service Changes (On/Off)
+    _checkInitialLocationService();
+    _serviceStatusSubscription = Geolocator.getServiceStatusStream().listen(
+      (ServiceStatus status) {
+        setState(() {
+          _isLocationServiceEnabled = (status == ServiceStatus.enabled);
+        });
+      },
+    );
   }
 
   @override
@@ -1377,7 +1433,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .doc(userId)
         .snapshots()
         .listen(
-      // Make the callback async
       (DocumentSnapshot snapshot) async {
         if (snapshot.exists && mounted) {
           final data = snapshot.data() as Map<String, dynamic>;
@@ -1385,21 +1440,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             _userData = data;
           });
 
-          // --- ADD THIS BLOCK ---
-          // Start downloading the image in the background
           final photoUrl = data['profilePictureUrl'] as String?;
           if (photoUrl != null && photoUrl.isNotEmpty) {
             precacheImage(NetworkImage(photoUrl), context);
           }
-          // --- END OF BLOCK ---
 
+          // ⭐️ THIS BLOCK IS WHAT REFERENCES YOUR MISSING VARIABLES ⭐️
           if (!_welcomeMessageShown) {
             _welcomeMessageShown = true;
 
-            // Step 1: Wait for the welcome toast
+            // 1. Welcome Toast
             await _showWelcomeToast(data);
 
-            // Step 2: Show the tourism reminder
+            // 2. Tourism Reminder (References _tourismReminderShown & _showResponsibleTourismReminder)
             if (mounted && !_tourismReminderShown) {
               await _showResponsibleTourismReminder();
               setState(() {
@@ -1407,18 +1460,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               });
             }
 
-            // --- START OF MODIFICATION ---
-            // 3. Proactively check if location is enabled
+            // 3. Location Check (References _checkLocationOnStartup)
             if (mounted) {
               await _checkLocationOnStartup();
             }
-            // --- END OF MODIFICATION ---
 
-            // 4. Now, attempt to go to the user's location
+            // ⭐️ NEW: Trigger Feature Discovery Tutorial ⭐️
+            if (mounted) {
+              // Small delay to ensure previous dialogs are fully closed/rendered
+              Future.delayed(const Duration(milliseconds: 500), () {
+                TutorialService.showTutorial(
+                  context: context,
+                  searchKey: _searchKey,
+                  filterKey: _filterKey,
+                  transportKey: _transportKey,
+                );
+              });
+            }
+
+            // 4. Go to Location
             if (mounted) {
               await _goToMyLocation();
             }
           }
+          // ⭐️ END OF BLOCK ⭐️
         }
       },
       onError: (e) {
@@ -1445,6 +1510,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     // --- END OF FIX ---
     _headsUpTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _serviceStatusSubscription?.cancel(); // ⭐️ Cancel this
 
     super.dispose();
   }
@@ -1539,14 +1605,70 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
+  // ⭐️ NEW HELPER WIDGET ⭐️
+  // Handles long text (like hours) nicely without breaking layout
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start, // Icon stays at the top!
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Icon(icon, size: 20, color: Theme.of(context).primaryColor),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.black87,
+                    height: 1.4, // Good line height for multi-line hours
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showPoiSheet({
     required String name,
     required String description,
     required Map<String, dynamic> data,
   }) {
     _saveToRecentlyViewed(data);
+    final String poiId = data['id']; // Get the POI ID
 
-    // --- 1. IMAGE CAROUSEL LOGIC (This part is correct) ---
+    // ⭐️ NEW: Set the highlight and rebuild markers to show it ⭐️
+    setState(() {
+      _highlightedPoiId = poiId;
+    });
+    _rebuildMarkers();
+
+    // --- 1. IMAGE LOGIC ---
     final List<String> displayImages = [];
     final String? primaryImage = data['primaryImage'] as String?;
     final List<String> otherImages =
@@ -1566,36 +1688,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         legacyImageUrl.isNotEmpty) {
       displayImages.add(legacyImageUrl);
     }
-    // --- END: IMAGE LOGIC ---
 
-    // --- Details (This part is correct) ---
-    final poiType = data['type'] as String?;
+    // --- 2. DATA EXTRACTION ---
+    // final poiType = data['type'] as String?; // Unused variable removed
     final String? openingHours = data['openingHours'] as String?;
     final String? contactNumber = data['contactNumber'] as String?;
     final String? status = data['status'] as String?;
     final bool? guideRequired = data['guideRequired'] as bool?;
 
+    // ⭐️ SMART LINE OF BUSINESS EXTRACTION ⭐️
+    String? specificType;
+    if (description.contains('Type:')) {
+      final RegExp typeRegex = RegExp(r'Type:\s*([^.\n]+)');
+      final match = typeRegex.firstMatch(description);
+      if (match != null) {
+        specificType = match.group(1)?.trim();
+      }
+    }
+
+    // --- 3. ENTRANCE FEE LOGIC ---
     String entranceFeeText = '';
     if (data['entranceFee'] is Map) {
       final feeMap = data['entranceFee'] as Map<String, dynamic>;
       final int? adultFee = (feeMap['adult'] as num?)?.toInt();
       final int? childFee = (feeMap['child'] as num?)?.toInt();
-
       List<String> feeParts = [];
-      if (adultFee != null) {
-        feeParts.add('Adult: ₱$adultFee');
-      }
-      if (childFee != null) {
-        feeParts.add('Child: ₱$childFee');
-      }
+      if (adultFee != null) feeParts.add('Adult: ₱$adultFee');
+      if (childFee != null) feeParts.add('Child: ₱$childFee');
       entranceFeeText = feeParts.join(', ');
-      if (entranceFeeText.isEmpty) {
-        entranceFeeText = 'Varies';
-      }
+      if (entranceFeeText.isEmpty) entranceFeeText = 'Varies';
     } else if (data['entranceFee'] is String) {
       entranceFeeText = data['entranceFee'] as String;
     }
-    // --- END: DATA EXTRACTION ---
 
     showModalBottomSheet(
       context: context,
@@ -1605,24 +1729,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
-        //
-        // --- ⭐️ BUG FIX IS HERE ⭐️ ---
-        // These variables are now defined OUTSIDE the StatefulBuilder.
-        // They will now persist for the life of the bottom sheet.
+        // Define controller outside StatefulBuilder
         final PageController pageController =
             PageController(viewportFraction: 0.88);
         int _currentPage = 0;
-        // --- ⭐️ END OF FIX ⭐️ ---
 
-        // --- Use a StatefulBuilder to update the dots ---
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setSheetState) {
-            // We NO LONGER define the controller or page index here.
-
             return DraggableScrollableSheet(
               expand: false,
-              initialChildSize: 0.8,
-              minChildSize: 0.4,
+              initialChildSize: 0.4, // ⭐️ NEW: Starts 40% visible
+              minChildSize: 0.4, // ⭐️ NEW: Can't collapse below 40%
               maxChildSize: 0.95,
               builder: (context, scrollController) {
                 return SingleChildScrollView(
@@ -1632,7 +1749,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // --- Drag handle & POI Name ---
+                        // --- Drag Handle ---
                         Center(
                           child: Container(
                             width: 40,
@@ -1644,6 +1761,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                           ),
                         ),
+
+                        // --- NAME ---
                         Text(
                           name,
                           style: const TextStyle(
@@ -1651,20 +1770,43 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+
+                        // ⭐️ SPECIFIC TYPE CHIP (Below Name) ⭐️
+                        if (specificType != null && specificType.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: Colors.blue.shade200),
+                              ),
+                              child: Text(
+                                specificType.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blue.shade800,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ),
+                          ),
+
                         const SizedBox(height: 16),
 
-                        // --- STYLISH CAROUSEL UI ---
+                        // --- CAROUSEL UI ---
                         if (displayImages.isNotEmpty)
                           Column(
                             children: [
                               SizedBox(
                                 height: 220,
                                 child: PageView.builder(
-                                  // Use the controller defined outside
                                   controller: pageController,
                                   itemCount: displayImages.length,
                                   onPageChanged: (int page) {
-                                    // This will now work correctly
                                     setSheetState(() {
                                       _currentPage = page;
                                     });
@@ -1684,8 +1826,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                           width: double.infinity,
                                           placeholder: (context, url) =>
                                               const Center(
-                                            child: CircularProgressIndicator(),
-                                          ),
+                                                  child:
+                                                      CircularProgressIndicator()),
                                           errorWidget: (context, url, error) =>
                                               const Icon(Icons.error),
                                         ),
@@ -1694,7 +1836,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   },
                                 ),
                               ),
-                              // --- Page Indicator Dots ---
                               if (displayImages.length > 1)
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1705,14 +1846,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                         duration:
                                             const Duration(milliseconds: 300),
                                         height: 8,
-                                        // Reads the _currentPage from outside
                                         width: _currentPage == index ? 24 : 8,
                                         margin: const EdgeInsets.symmetric(
                                             horizontal: 4, vertical: 12),
                                         decoration: BoxDecoration(
                                           borderRadius:
                                               BorderRadius.circular(4),
-                                          // Reads the _currentPage from outside
                                           color: _currentPage == index
                                               ? Theme.of(context).primaryColor
                                               : Colors.grey.shade300,
@@ -1724,7 +1863,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ],
                           )
                         else
-                          // Placeholder if no images
                           Container(
                             height: 200,
                             width: double.infinity,
@@ -1738,62 +1876,71 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                               size: 50,
                             ),
                           ),
-                        // --- END: CAROUSEL UI ---
 
                         const SizedBox(height: 12),
 
-                        // --- CHIP LAYOUT ---
+                        // ⭐️ SHORT CHIPS ROW ⭐️
                         Wrap(
                           spacing: 8.0,
                           runSpacing: 8.0,
                           children: [
-                            // Fields for Tourist Spots ONLY
-                            if (poiType == 'Tourist Spots') ...[
-                              if (status != null && status.isNotEmpty)
-                                _buildStatusChip(status),
-                              if (guideRequired != null)
-                                _buildDetailChip(
-                                  icon: Icons.person_search_outlined,
-                                  label: 'Guide',
-                                  value: guideRequired
-                                      ? 'Required'
-                                      : 'Not Required',
-                                ),
-                              if (entranceFeeText.isNotEmpty)
-                                _buildDetailChip(
-                                  icon: Icons.local_activity_outlined,
-                                  label: 'Fee',
-                                  value: entranceFeeText,
-                                ),
-                            ],
-                            // Fields for NON-Tourist Spots
-                            if (poiType != 'Tourist Spots') ...[
-                              if (entranceFeeText.isNotEmpty)
-                                _buildDetailChip(
-                                  icon: Icons.local_activity_outlined,
-                                  label: 'Fee',
-                                  value: entranceFeeText,
-                                ),
-                              if (contactNumber != null &&
-                                  contactNumber.isNotEmpty)
-                                _buildDetailChip(
-                                  icon: Icons.phone_outlined,
-                                  label: 'Contact',
-                                  value: contactNumber,
-                                ),
-                            ],
-                            // Opening Hours (Common to all)
-                            if (openingHours != null && openingHours.isNotEmpty)
+                            if (status != null && status.isNotEmpty)
+                              _buildStatusChip(status),
+                            if (guideRequired != null)
                               _buildDetailChip(
-                                icon: Icons.access_time_outlined,
-                                label: 'Hours',
-                                value: openingHours,
+                                icon: Icons.person_search_outlined,
+                                label: 'Guide',
+                                value:
+                                    guideRequired ? 'Required' : 'Not Required',
+                              ),
+                            if (entranceFeeText.isNotEmpty)
+                              _buildDetailChip(
+                                icon: Icons.local_activity_outlined,
+                                label: 'Fee',
+                                value: entranceFeeText,
                               ),
                           ],
                         ),
+
+                        const SizedBox(height: 16),
+
+                        // ⭐️ DETAILED INFO SECTION ⭐️
+                        if ((openingHours != null && openingHours.isNotEmpty) ||
+                            (contactNumber != null && contactNumber.isNotEmpty))
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.grey.shade200),
+                            ),
+                            child: Column(
+                              children: [
+                                if (openingHours != null &&
+                                    openingHours.isNotEmpty)
+                                  _buildInfoRow(Icons.access_time,
+                                      "Opening Hours", openingHours),
+                                if ((openingHours != null &&
+                                        openingHours.isNotEmpty) &&
+                                    (contactNumber != null &&
+                                        contactNumber.isNotEmpty))
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 50),
+                                    child: Divider(
+                                        height: 1, color: Colors.grey.shade300),
+                                  ),
+                                if (contactNumber != null &&
+                                    contactNumber.isNotEmpty)
+                                  _buildInfoRow(Icons.phone_outlined,
+                                      "Contact Number", contactNumber),
+                              ],
+                            ),
+                          ),
+
                         const SizedBox(height: 24),
 
-                        // --- CLEAN DESCRIPTION SECTION ---
+                        // --- DESCRIPTION ---
                         const Text(
                           "Description",
                           style: TextStyle(
@@ -1818,7 +1965,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                           ),
                         ),
+
+                        // ⭐️ FIX: Use the refactored Widget here ⭐️
                         PoiTipCard(poiData: data),
+
                         const SizedBox(height: 24),
 
                         // --- Action Buttons ---
@@ -1838,7 +1988,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                 icon: const Icon(Icons.playlist_add),
                                 label: const Text("Add to Plan"),
                                 onPressed: () async {
-                                  // ... (Your existing "Add to Plan" logic)
                                   if (_currentUser == null) {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
@@ -1850,9 +1999,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   final Map<String, dynamic>?
                                       selectedItinerary =
                                       await _showItinerarySelectorDialog();
-                                  if (selectedItinerary == null) {
-                                    return; // User canceled
-                                  }
+                                  if (selectedItinerary == null) return;
+
                                   String itineraryId = selectedItinerary['id']!;
                                   if (itineraryId == 'CREATE_NEW') {
                                     final TextEditingController nameController =
@@ -1865,9 +2013,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                         content: TextField(
                                           controller: nameController,
                                           decoration: const InputDecoration(
-                                            hintText:
-                                                "e.g., 'My Weekend Getaway'",
-                                          ),
+                                              hintText:
+                                                  "e.g., 'My Weekend Getaway'"),
                                           autofocus: true,
                                         ),
                                         actions: [
@@ -1881,9 +2028,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                             onPressed: () {
                                               if (nameController
                                                   .text.isNotEmpty) {
-                                                Navigator.of(
-                                                  context,
-                                                ).pop(nameController.text);
+                                                Navigator.of(context)
+                                                    .pop(nameController.text);
                                               }
                                             },
                                           ),
@@ -1905,9 +2051,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                     });
                                     itineraryId = newDoc.id;
                                   }
-                                  if (mounted) {
-                                    Navigator.of(context).pop();
-                                  }
+
+                                  if (mounted) Navigator.of(context).pop();
+
                                   if (mounted) {
                                     final result =
                                         await Navigator.of(context).push(
@@ -1933,39 +2079,28 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                               ),
                             ),
                             const SizedBox(width: 12),
-                            // Get Directions Button
                             Expanded(
                               child: ElevatedButton.icon(
                                 style: ElevatedButton.styleFrom(
                                   padding:
                                       const EdgeInsets.symmetric(vertical: 14),
                                   shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
+                                      borderRadius: BorderRadius.circular(12)),
                                   backgroundColor:
                                       Theme.of(context).primaryColor,
                                 ),
-                                icon: const Icon(
-                                  Icons.directions,
-                                  color: Colors.white,
-                                ),
-                                label: const Text(
-                                  "Get Directions",
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.white,
-                                  ),
-                                ),
+                                icon: const Icon(Icons.directions,
+                                    color: Colors.white),
+                                label: const Text("Get Directions",
+                                    style: TextStyle(
+                                        fontSize: 16, color: Colors.white)),
                                 onPressed: () async {
-                                  Navigator.pop(context); // Close the POI sheet
+                                  Navigator.pop(context);
                                   final lat = data['lat'] as double?;
                                   final lng = data['lng'] as double?;
                                   if (lat != null && lng != null) {
                                     await _drawRouteToPoi(
-                                      lat,
-                                      lng,
-                                      _currentTravelMode,
-                                    );
+                                        lat, lng, _currentTravelMode);
                                   }
                                 },
                               ),
@@ -1982,7 +2117,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           },
         );
       },
-    );
+    ).then((_) {
+      _resetHighlight();
+    });
   }
 
 // ... (Your _saveToRecentlyViewed, _buildDetailChip, and _buildStatusChip methods
@@ -2330,6 +2467,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     // We don't check permissions here, _goToMyLocation() will
     // handle the system permission pop-up if needed.
+  }
+
+  Future<void> _checkInitialLocationService() async {
+    bool enabled = await Geolocator.isLocationServiceEnabled();
+    if (mounted) {
+      setState(() {
+        _isLocationServiceEnabled = enabled;
+      });
+    }
   }
 
 // ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
@@ -2691,7 +2837,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _isFollowingUser = true;
     });
 
-    // Animate back to the user's position
     _isAnimatingCamera = true;
     _mapController
         ?.animateCamera(
@@ -2699,8 +2844,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         CameraPosition(
           target: _lastKnownPosition!,
           zoom: 17.5,
-          tilt: 50.0,
-          bearing: _lastKnownBearing, // Use the last known bearing
+          tilt:
+              50.0, // ⭐️ You currently have 50.0 here, which is good for driving!
+          bearing: _lastKnownBearing,
         ),
       ),
     )
@@ -2808,6 +2954,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             // Update the current zoom level as the user moves the map
             onCameraMove: (CameraPosition position) {
               _currentZoom = position.zoom;
+
+              // ⭐️ Check if target is outside Sagada
+              bool isOutside = !_sagadaBounds.contains(position.target);
+              if (isOutside != _showRecenterButton) {
+                setState(() {
+                  _showRecenterButton = isOutside;
+                });
+              }
             },
 
             // When the user stops moving the map, rebuild the markers
@@ -2833,11 +2987,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             initialCameraPosition: const CameraPosition(
               target: _initialPosition, // Sagada
               zoom: 14,
+              tilt: 45.0, // ⭐️ ADD THIS LINE (0.0 is flat, 90.0 is horizon)
             ),
 
             markers: _markers,
             polylines: _polylines.union(_closureLines),
-            polygons: const {}, // Empty set for polygons
+            // ⭐️ UPDATE THIS LINE ⭐️
+            polygons: const {}, // Or remove the line entirely, as it will default to {}
 
             // UI Settings
             myLocationEnabled: _locationPermissionGranted,
@@ -2845,6 +3001,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             zoomControlsEnabled: false, // Clean UI
             compassEnabled: false, // You have your custom compass widget
             mapToolbarEnabled: false, // Disable Google's "Open in Maps" buttons
+            // ⭐️ RENDER THE CURRENT MAP TYPE ⭐️
+            mapType: _currentMapType,
           ),
           // 1. Heads Up Card (Existing)
           // 1. Heads Up Card (Refactored)
@@ -2986,6 +3144,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           // Dropdown filter
                           Expanded(
                             child: Container(
+                              key: _filterKey, // ⭐️ ASSIGN KEY HERE ⭐️
                               margin: const EdgeInsets.symmetric(horizontal: 8),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
@@ -3051,41 +3210,66 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                           ),
                           // Search button
-                          _buildRoundButton(
-                            icon: Icons.search,
-                            onPressed: () async {
-                              final result =
-                                  await showSearch<Map<String, dynamic>?>(
-                                context: context,
-                                delegate: POISearchDelegate(
-                                  userLocation: _lastKnownPosition,
+                          Container(
+                            key: _searchKey, // ⭐️ Assign the key here
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.25),
+                                  blurRadius: 6,
+                                  offset: const Offset(0, 2),
                                 ),
-                              );
-                              if (result != null) {
-                                final lat = result['lat'] as double?;
-                                final lng = result['lng'] as double?;
-                                if (lat != null && lng != null) {
-                                  const double latOffset = 0.0012;
-                                  await _mapController?.animateCamera(
-                                    CameraUpdate.newLatLngZoom(
-                                      LatLng(lat + latOffset, lng),
-                                      16,
+                              ],
+                            ),
+                            child: CircleAvatar(
+                              backgroundColor: Colors.white,
+                              radius: 24,
+                              child: IconButton(
+                                icon: const Icon(Icons.search,
+                                    color: Colors.black87),
+                                onPressed: () async {
+                                  final result =
+                                      await showSearch<Map<String, dynamic>?>(
+                                    context: context,
+                                    delegate: POISearchDelegate(
+                                      userLocation: _lastKnownPosition,
                                     ),
                                   );
-                                  Future.delayed(
-                                    const Duration(milliseconds: 300),
-                                    () {
-                                      _showPoiSheet(
-                                        name: result['name'] ?? 'Unnamed',
-                                        description:
-                                            result['description'] ?? '',
-                                        data: result,
+
+                                  if (result != null) {
+                                    final lat = result['lat'] as double?;
+                                    final lng = result['lng'] as double?;
+
+                                    if (lat != null && lng != null) {
+                                      // 1. Animate Camera (Zoom in slightly above the target)
+                                      const double latOffset = 0.0012;
+                                      await _mapController?.animateCamera(
+                                        CameraUpdate.newLatLngZoom(
+                                          LatLng(lat + latOffset, lng),
+                                          16,
+                                        ),
                                       );
-                                    },
-                                  );
-                                }
-                              }
-                            },
+
+                                      // 2. Show the Sheet after animation
+                                      if (mounted) {
+                                        Future.delayed(
+                                          const Duration(milliseconds: 300),
+                                          () {
+                                            _showPoiSheet(
+                                              name: result['name'] ?? 'Unnamed',
+                                              description:
+                                                  result['description'] ?? '',
+                                              data: result,
+                                            );
+                                          },
+                                        );
+                                      }
+                                    }
+                                  }
+                                },
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -3111,7 +3295,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ScaleTransition(scale: animation, child: child),
                         child: _currentTransportRouteData == null
                             ? FloatingActionButton(
-                                key: const ValueKey('transport_button'),
+                                key:
+                                    _transportKey, // ⭐️ ASSIGN KEY HERE (Replace ValueKey if present) ⭐️
                                 heroTag: 'transport_button',
                                 onPressed: _showTransportBrowser,
                                 backgroundColor: Colors.white,
@@ -3141,6 +3326,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                 ),
                               )
                             : const SizedBox.shrink(),
+                      ),
+                      const SizedBox(height: 12),
+                      // ⭐️ NEW: Map Type Switch Button (Google Style) ⭐️
+                      FloatingActionButton.small(
+                        heroTag: 'map_type_button',
+                        onPressed: _showMapTypeSelector, // Calls the sheet
+                        backgroundColor: Colors.white,
+                        child: const Icon(Icons.layers_outlined,
+                            color: Colors.black87),
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -3261,6 +3455,48 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     onStartNavigation: _enterLiveNavigation,
                   ),
           ),
+          if (_isOffline)
+            Positioned(
+              top: MediaQuery.of(context).padding.top,
+              left: 0,
+              right: 0,
+              child: Container(
+                color: Colors.red,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: const Text(
+                  "Offline Mode - No Internet Connection",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+
+          // ⭐️ 2. Return to Sagada Button (Updated)
+          if (_showRecenterButton && !_isNavigating)
+            Positioned(
+              top: 120,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    // ⭐️ FIX: Use newLatLngZoom to reset zoom level too
+                    _mapController?.animateCamera(
+                      CameraUpdate.newLatLngZoom(_initialPosition, 14.0),
+                    );
+                  },
+                  icon: const Icon(Icons.wrong_location_outlined,
+                      color: Colors.white),
+                  label: const Text("Return to Sagada"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black87,
+                    foregroundColor: Colors.white,
+                    shape: const StadiumBorder(),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -3359,32 +3595,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Icon(iconData, color: iconColor);
   }
 
-  Widget _buildRoundButton({
-    required IconData icon,
-    required VoidCallback onPressed,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle, // Match the shape of the CircleAvatar
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.25),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: CircleAvatar(
-        backgroundColor: Colors.white,
-        radius: 24,
-        child: IconButton(
-          icon: Icon(icon, color: Colors.black87),
-          onPressed: onPressed,
-        ),
-      ),
-    );
-  }
-
   // REPLACE your _buildProfileButton with this cleaner version
   Widget _buildProfileButton({required VoidCallback onPressed}) {
     final photoUrl = _userData?['profilePictureUrl'];
@@ -3449,6 +3659,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     Color iconColor = Colors.grey.shade700;
     Color backgroundColor = Colors.white;
 
+    // ⭐️ NEW: Handle Disabled State First
+    if (!_isLocationServiceEnabled) {
+      return FloatingActionButton(
+        heroTag: 'location_button',
+        onPressed: () {
+          // If disabled, clicking opens settings
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Please enable Location Services.")),
+          );
+          AppSettings.openAppSettings(type: AppSettingsType.location);
+        },
+        backgroundColor: Colors.red.shade50, // Subtle red warning tint
+        child: const Icon(Icons.location_disabled, color: Colors.red),
+      );
+    }
+
+    // Existing State Logic (only runs if enabled)
     switch (_locationButtonState) {
       case LocationButtonState.centered:
         icon = Icons.my_location;
@@ -3456,7 +3683,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         backgroundColor = Colors.blue;
         break;
       case LocationButtonState.compass:
-        icon = Icons.explore; // Compass icon
+        icon = Icons.explore;
         iconColor = Colors.white;
         backgroundColor = Colors.blue;
         break;
@@ -3688,10 +3915,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             Polyline(
               polylineId: PolylineId(doc.id),
               points: points,
-              color: Colors.red.shade700,
-              width: 6,
-              // Use dashes for manual lines, solid for auto lines (optional preference)
-              patterns: [PatternItem.dash(20), PatternItem.gap(10)],
+              // ⭐️ STYLE UPDATE: "Caution Tape" Look
+              color: Colors.redAccent.shade700
+                  .withOpacity(0.8), // Slightly see-through
+              width: 6, // Thick enough to be a warning
+              jointType: JointType.mitered,
+              // Longer dashes look more like barriers
+              patterns: [PatternItem.dash(30), PatternItem.gap(20)],
               consumeTapEvents: true,
               onTap: () {
                 _showClosureDetails(data);
@@ -3709,6 +3939,191 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }, onError: (error) {
       print("❌ ERROR in closure listener: $error");
     });
+  }
+
+  void _resetHighlight() {
+    if (_highlightedPoiId != null) {
+      setState(() {
+        _highlightedPoiId = null;
+      });
+      // Call rebuild to remove the highlight marker and draw the normal set
+      _rebuildMarkers();
+    }
+  }
+
+  // ⭐️ Helper to check initial and stream connectivity
+  void _checkConnectivity() {
+    // ⭐️ FIX: Assign the listener to the variable
+    _connectivitySubscription = Connectivity()
+        .onConnectivityChanged
+        .listen((List<ConnectivityResult> results) {
+      bool isNowOffline = results.contains(ConnectivityResult.none);
+
+      if (_wasOffline && !isNowOffline) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Internet Connection Restored"),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          _isOffline = isNowOffline;
+          _wasOffline = isNowOffline;
+        });
+      }
+    });
+  }
+
+  void _showFeatureDiscovery() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('tutorial_shown') == true) return; // Show only once
+
+    List<TargetFocus> targets = [];
+
+    // Target 1: Search
+    targets.add(
+      TargetFocus(
+        identify: "Search",
+        keyTarget: _searchKey,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            builder: (context, controller) {
+              return const Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Search Places",
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontSize: 20.0)),
+                  Padding(
+                    padding: EdgeInsets.only(top: 10.0),
+                    child: Text(
+                      "Find tourist spots, hotels, and dining easily.",
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    // ... Add similar targets for _filterKey and _transportKey ...
+
+    TutorialCoachMark(
+      targets: targets,
+      colorShadow: Colors.black,
+      textSkip: "SKIP",
+      paddingFocus: 10,
+      opacityShadow: 0.8,
+      onFinish: () {
+        prefs.setBool('tutorial_shown', true);
+      },
+    ).show(context: context);
+  }
+
+  void _showMapTypeSelector() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent, // Floating look
+      builder: (context) {
+        return Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "Map Type",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // Option 1: Default
+                  _buildMapTypeOption(
+                    title: "Default",
+                    icon: Icons.map_outlined,
+                    isSelected: _currentMapType == MapType.normal,
+                    onTap: () {
+                      setState(() => _currentMapType = MapType.normal);
+                      Navigator.pop(context);
+                    },
+                  ),
+                  // Option 2: Satellite
+                  _buildMapTypeOption(
+                    title: "Satellite",
+                    icon: Icons.satellite_alt, // Requires Material Icons
+                    isSelected: _currentMapType == MapType.satellite,
+                    onTap: () {
+                      setState(() => _currentMapType = MapType.satellite);
+                      Navigator.pop(context);
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Helper for the option cards
+  Widget _buildMapTypeOption({
+    required String title,
+    required IconData icon,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            height: 70,
+            width: 70,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: isSelected ? Colors.blue : Colors.grey.shade300,
+                width: isSelected ? 3 : 1,
+              ),
+              color: isSelected ? Colors.blue.withOpacity(0.1) : Colors.white,
+            ),
+            child: Icon(
+              icon,
+              size: 30,
+              color: isSelected ? Colors.blue : Colors.grey.shade700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            style: TextStyle(
+              color: isSelected ? Colors.blue : Colors.black,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildItineraryInfoChip(IconData icon, String value, String label) {

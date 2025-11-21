@@ -70,6 +70,8 @@ dependencies:
   photo_view: ^0.15.0
   google_sign_in: ^7.2.0
   flutter_dotenv: ^6.0.0
+  tutorial_coach_mark: ^1.2.9 # Add this line
+  connectivity_plus: ^6.0.3  # For Offline Mode
 
 dev_dependencies:
   flutter_test:
