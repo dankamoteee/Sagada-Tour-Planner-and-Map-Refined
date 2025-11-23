@@ -1694,9 +1694,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     required Map<String, dynamic> data,
   }) {
     _saveToRecentlyViewed(data);
-    final String poiId = data['id']; // Get the POI ID
+    final String poiId = data['id'];
 
-    // ⭐️ NEW: Set the highlight and rebuild markers to show it ⭐️
     setState(() {
       _highlightedPoiId = poiId;
     });
@@ -1723,15 +1722,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       displayImages.add(legacyImageUrl);
     }
 
-    // --- 2. DATA EXTRACTION ---
-    // final poiType = data['type'] as String?; // Unused variable removed
-    final String poiType = data['type'] ?? ''; // ⭐️ Get the type safely
+    // --- 2. DATA EXTRACTION & VISIBILITY LOGIC ---
+    final String poiType = data['type'] ?? '';
     final String? openingHours = data['openingHours'] as String?;
     final String? contactNumber = data['contactNumber'] as String?;
     final String? status = data['status'] as String?;
     final bool? guideRequired = data['guideRequired'] as bool?;
 
-    // ⭐️ NEW: DEFINE VISIBILITY FLAGS ⭐️
+    // Define who gets what fields
     final bool isTouristSpot = poiType == 'Tourist Spots';
     final bool showContactInfo = poiType == 'Food & Dining' ||
         poiType == 'Business Establishments' ||
@@ -1739,11 +1737,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         poiType == 'Services' ||
         poiType == 'Agencies and Offices';
 
-    // ⭐️ UPDATED LOGIC: Read directly from the new 'specificType' field ⭐️
+    // Specific Type Logic (Admin Script priority)
     String? specificType = data['specificType'] as String?;
-
-    // Safety Fallback: If the field is missing (script hasn't run on this doc yet),
-    // we still try to extract it from the description.
     if (specificType == null && description.contains('Type:')) {
       final RegExp typeRegex = RegExp(r'Type:\s*([^.\n]+)');
       final match = typeRegex.firstMatch(description);
@@ -1752,7 +1747,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
 
-    // --- 3. ENTRANCE FEE LOGIC ---
+    // Entrance Fee Logic
     String entranceFeeText = '';
     if (data['entranceFee'] is Map) {
       final feeMap = data['entranceFee'] as Map<String, dynamic>;
@@ -1767,15 +1762,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       entranceFeeText = data['entranceFee'] as String;
     }
 
+    // --- 3. DEFINE STYLES ---
+    BoxDecoration sheetDecoration;
+    if (isTouristSpot) {
+      sheetDecoration = BoxDecoration(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            const Color(0xFFFDFBF7), // Warm/Paper-like white
+            Colors.white,
+          ],
+        ),
+        border: Border(
+          top: BorderSide(
+              color: Theme.of(context).primaryColor.withOpacity(0.3), width: 4),
+        ),
+      );
+    } else {
+      sheetDecoration = const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      );
+    }
+
+    // --- 4. SHOW SHEET ---
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+      backgroundColor: Colors
+          .transparent, // ⭐️ Important: Transparent so container styling shows
       builder: (context) {
-        // Define controller outside StatefulBuilder
         final PageController pageController =
             PageController(viewportFraction: 0.88);
         int _currentPage = 0;
@@ -1784,395 +1802,428 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           builder: (BuildContext context, StateSetter setSheetState) {
             return DraggableScrollableSheet(
               expand: false,
-              initialChildSize:
-                  0.55, // 🚀 NEW: Starts slightly more than half screen
-              minChildSize: 0.4, // Keep min low so they can swipe it down
+              initialChildSize: 0.55, // Taller start position
+              minChildSize: 0.4,
               maxChildSize: 0.95,
               builder: (context, scrollController) {
-                return SingleChildScrollView(
-                  controller: scrollController,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // --- Drag Handle ---
-                        Center(
-                          child: Container(
-                            width: 40,
-                            height: 4,
-                            margin: const EdgeInsets.only(bottom: 16),
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                        ),
-
-                        // --- NAME ---
-                        Text(
-                          name,
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-
-                        // ⭐️ SPECIFIC TYPE CHIP (Below Name) ⭐️
-                        if (specificType != null && specificType.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
+                return Container(
+                  decoration: sheetDecoration, // ⭐️ Apply Custom Decoration
+                  child: SingleChildScrollView(
+                    controller: scrollController,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // --- Drag Handle ---
+                          Center(
                             child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
+                              width: 40,
+                              height: 4,
+                              margin: const EdgeInsets.only(bottom: 16),
                               decoration: BoxDecoration(
-                                color: Colors.blue.shade50,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.blue.shade200),
-                              ),
-                              child: Text(
-                                specificType.toUpperCase(),
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue.shade800,
-                                  letterSpacing: 0.5,
-                                ),
+                                // Darker handle for tourist spots for contrast
+                                color: isTouristSpot
+                                    ? const Color(0xFF3A6A55).withOpacity(0.5)
+                                    : Colors.black26,
+                                borderRadius: BorderRadius.circular(10),
                               ),
                             ),
                           ),
 
-                        const SizedBox(height: 16),
-
-                        // --- CAROUSEL UI ---
-                        if (displayImages.isNotEmpty)
-                          Column(
-                            children: [
-                              SizedBox(
-                                height: 220,
-                                child: PageView.builder(
-                                  controller: pageController,
-                                  itemCount: displayImages.length,
-                                  onPageChanged: (int page) {
-                                    setSheetState(() {
-                                      _currentPage = page;
-                                    });
-                                  },
-                                  itemBuilder: (context, index) {
-                                    return AnimatedContainer(
-                                      duration:
-                                          const Duration(milliseconds: 300),
-                                      curve: Curves.easeInOut,
-                                      margin: const EdgeInsets.symmetric(
-                                          horizontal: 6),
-                                      child: ClipRRect(
-                                        borderRadius: BorderRadius.circular(16),
-                                        child: CachedNetworkImage(
-                                          imageUrl: displayImages[index],
-                                          memCacheHeight:
-                                              600, // 🚀 ADD THIS LINE
-                                          fit: BoxFit.cover,
-                                          width: double.infinity,
-                                          placeholder: (context, url) =>
-                                              const Center(
-                                                  child:
-                                                      CircularProgressIndicator()),
-                                          errorWidget: (context, url, error) =>
-                                              const Icon(Icons.error),
-                                        ),
-                                      ),
-                                    );
-                                  },
+                          // --- Name (Fancy if Tourist Spot) ---
+                          if (isTouristSpot)
+                            Center(
+                              child: Text(
+                                name.toUpperCase(),
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 1.1,
+                                  color: Color(0xFF3A6A55),
                                 ),
                               ),
-                              if (displayImages.length > 1)
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: List.generate(
-                                    displayImages.length,
-                                    (index) {
+                            )
+                          else
+                            Text(
+                              name,
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+
+                          // --- Specific Type Chip ---
+                          if (specificType != null && specificType.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8.0),
+                              // If tourist spot, center the chip too
+                              child: Align(
+                                alignment: isTouristSpot
+                                    ? Alignment.center
+                                    : Alignment.centerLeft,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue.shade50,
+                                    borderRadius: BorderRadius.circular(20),
+                                    border:
+                                        Border.all(color: Colors.blue.shade200),
+                                  ),
+                                  child: Text(
+                                    specificType.toUpperCase(),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue.shade800,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                          const SizedBox(height: 16),
+
+                          // --- Carousel ---
+                          if (displayImages.isNotEmpty)
+                            Column(
+                              children: [
+                                SizedBox(
+                                  height: 220,
+                                  child: PageView.builder(
+                                    controller: pageController,
+                                    itemCount: displayImages.length,
+                                    onPageChanged: (int page) {
+                                      setSheetState(() {
+                                        _currentPage = page;
+                                      });
+                                    },
+                                    itemBuilder: (context, index) {
                                       return AnimatedContainer(
                                         duration:
                                             const Duration(milliseconds: 300),
-                                        height: 8,
-                                        width: _currentPage == index ? 24 : 8,
+                                        curve: Curves.easeInOut,
                                         margin: const EdgeInsets.symmetric(
-                                            horizontal: 4, vertical: 12),
-                                        decoration: BoxDecoration(
+                                            horizontal: 6),
+                                        child: ClipRRect(
                                           borderRadius:
-                                              BorderRadius.circular(4),
-                                          color: _currentPage == index
-                                              ? Theme.of(context).primaryColor
-                                              : Colors.grey.shade300,
+                                              BorderRadius.circular(16),
+                                          child: CachedNetworkImage(
+                                            imageUrl: displayImages[index],
+                                            memCacheHeight: 600, // Optimized
+                                            fit: BoxFit.cover,
+                                            width: double.infinity,
+                                            placeholder: (context, url) =>
+                                                const Center(
+                                                    child:
+                                                        CircularProgressIndicator()),
+                                            errorWidget:
+                                                (context, url, error) =>
+                                                    const Icon(Icons.error),
+                                          ),
                                         ),
                                       );
                                     },
                                   ),
                                 ),
-                            ],
-                          )
-                        else
-                          Container(
-                            height: 200,
-                            width: double.infinity,
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade200,
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Icon(
-                              Icons.image_not_supported,
-                              color: Colors.grey.shade400,
-                              size: 50,
-                            ),
-                          ),
-
-                        const SizedBox(height: 12),
-
-                        // ⭐️ SHORT CHIPS ROW ⭐️
-                        // ⭐️ SHORT CHIPS ROW (Conditional) ⭐️
-                        Wrap(
-                          spacing: 8.0,
-                          runSpacing: 8.0,
-                          children: [
-                            // Only show Status, Guide, Fee for Tourist Spots
-                            if (isTouristSpot) ...[
-                              if (status != null && status.isNotEmpty)
-                                _buildStatusChip(status),
-                              if (guideRequired != null)
-                                _buildDetailChip(
-                                  icon: Icons.person_search_outlined,
-                                  label: 'Guide',
-                                  value: guideRequired
-                                      ? 'Required'
-                                      : 'Not Required',
-                                ),
-                              if (entranceFeeText.isNotEmpty)
-                                _buildDetailChip(
-                                  icon: Icons.local_activity_outlined,
-                                  label: 'Fee',
-                                  value: entranceFeeText,
-                                ),
-                            ],
-                          ],
-                        ),
-
-                        const SizedBox(height: 16),
-
-                        // ⭐️ DETAILED INFO SECTION ⭐️
-                        // Check if we have anything to show
-                        if ((openingHours != null && openingHours.isNotEmpty) ||
-                            (showContactInfo &&
-                                contactNumber != null &&
-                                contactNumber.isNotEmpty))
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade50,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: Colors.grey.shade200),
-                            ),
-                            child: Column(
-                              children: [
-                                // Opening Hours (Show for everyone)
-                                if (openingHours != null &&
-                                    openingHours.isNotEmpty)
-                                  _buildInfoRow(Icons.access_time,
-                                      "Opening Hours", openingHours),
-
-                                // Divider (Only if both exist)
-                                if ((openingHours != null &&
-                                        openingHours.isNotEmpty) &&
-                                    (showContactInfo &&
-                                        contactNumber != null &&
-                                        contactNumber.isNotEmpty))
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 50),
-                                    child: Divider(
-                                        height: 1, color: Colors.grey.shade300),
+                                if (displayImages.length > 1)
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: List.generate(
+                                      displayImages.length,
+                                      (index) {
+                                        return AnimatedContainer(
+                                          duration:
+                                              const Duration(milliseconds: 300),
+                                          height: 8,
+                                          width: _currentPage == index ? 24 : 8,
+                                          margin: const EdgeInsets.symmetric(
+                                              horizontal: 4, vertical: 12),
+                                          decoration: BoxDecoration(
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                            color: _currentPage == index
+                                                ? Theme.of(context).primaryColor
+                                                : Colors.grey.shade300,
+                                          ),
+                                        );
+                                      },
+                                    ),
                                   ),
+                              ],
+                            )
+                          else
+                            Container(
+                              height: 200,
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Icon(
+                                Icons.image_not_supported,
+                                color: Colors.grey.shade400,
+                                size: 50,
+                              ),
+                            ),
 
-                                // Contact Number (Conditional)
-                                if (showContactInfo &&
-                                    contactNumber != null &&
-                                    contactNumber.isNotEmpty)
-                                  _buildInfoRow(Icons.phone_outlined,
-                                      "Contact Number", contactNumber),
+                          const SizedBox(height: 12),
+
+                          // --- Short Chips (Conditional) ---
+                          if (isTouristSpot)
+                            Wrap(
+                              spacing: 8.0,
+                              runSpacing: 8.0,
+                              children: [
+                                if (status != null && status.isNotEmpty)
+                                  _buildStatusChip(status),
+                                if (guideRequired != null)
+                                  _buildDetailChip(
+                                    icon: Icons.person_search_outlined,
+                                    label: 'Guide',
+                                    value: guideRequired
+                                        ? 'Required'
+                                        : 'Not Required',
+                                  ),
+                                if (entranceFeeText.isNotEmpty)
+                                  _buildDetailChip(
+                                    icon: Icons.local_activity_outlined,
+                                    label: 'Fee',
+                                    value: entranceFeeText,
+                                  ),
                               ],
                             ),
-                          ),
 
-                        const SizedBox(height: 24),
+                          const SizedBox(height: 16),
 
-                        // --- DESCRIPTION ---
-                        const Text(
-                          "Description",
-                          style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(12),
+                          // --- Detailed Info Section ---
+                          if ((openingHours != null &&
+                                  openingHours.isNotEmpty) ||
+                              (showContactInfo &&
+                                  contactNumber != null &&
+                                  contactNumber.isNotEmpty))
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade50,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.grey.shade200),
+                              ),
+                              child: Column(
+                                children: [
+                                  if (openingHours != null &&
+                                      openingHours.isNotEmpty)
+                                    _buildInfoRow(Icons.access_time,
+                                        "Opening Hours", openingHours),
+                                  if ((openingHours != null &&
+                                          openingHours.isNotEmpty) &&
+                                      (showContactInfo &&
+                                          contactNumber != null &&
+                                          contactNumber.isNotEmpty))
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 50),
+                                      child: Divider(
+                                          height: 1,
+                                          color: Colors.grey.shade300),
+                                    ),
+                                  if (showContactInfo &&
+                                      contactNumber != null &&
+                                      contactNumber.isNotEmpty)
+                                    _buildInfoRow(Icons.phone_outlined,
+                                        "Contact Number", contactNumber),
+                                ],
+                              ),
+                            ),
+
+                          const SizedBox(height: 24),
+
+                          // --- Description ---
+                          const Text(
+                            "Description",
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
                           ),
-                          child: Text(
-                            description.isEmpty
-                                ? "No description available."
-                                : description,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.black87,
-                              height: 1.5,
+                          const SizedBox(height: 8),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: isTouristSpot
+                                  ? Colors.white
+                                  : Colors.grey
+                                      .shade100, // White bg for gradient sheet
+                              borderRadius: BorderRadius.circular(12),
+                              border: isTouristSpot
+                                  ? Border.all(
+                                      color: const Color(0xFF3A6A55)
+                                          .withOpacity(0.1))
+                                  : null,
+                            ),
+                            child: Text(
+                              description.isEmpty
+                                  ? "No description available."
+                                  : description,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.black87,
+                                height: 1.5,
+                              ),
                             ),
                           ),
-                        ),
 
-                        // ⭐️ FIX: Use the refactored Widget here ⭐️
-                        PoiTipCard(poiData: data),
+                          PoiTipCard(poiData: data),
 
-                        const SizedBox(height: 24),
+                          const SizedBox(height: 24),
 
-                        // --- Action Buttons ---
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextButton.icon(
-                                style: TextButton.styleFrom(
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 14),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    side:
-                                        BorderSide(color: Colors.grey.shade300),
+                          // --- Action Buttons ---
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      side: BorderSide(
+                                          color: Colors.grey.shade300),
+                                    ),
                                   ),
-                                ),
-                                icon: const Icon(Icons.playlist_add),
-                                label: const Text("Add to Plan"),
-                                onPressed: () async {
-                                  if (_currentUser == null) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                          content: Text(
-                                              'You must be logged in to add to a plan.')),
-                                    );
-                                    return;
-                                  }
-                                  final Map<String, dynamic>?
-                                      selectedItinerary =
-                                      await _showItinerarySelectorDialog();
-                                  if (selectedItinerary == null) return;
-
-                                  String itineraryId = selectedItinerary['id']!;
-                                  if (itineraryId == 'CREATE_NEW') {
-                                    final TextEditingController nameController =
-                                        TextEditingController();
-                                    final String? newName =
-                                        await showDialog<String>(
-                                      context: context,
-                                      builder: (context) => AlertDialog(
-                                        title: const Text('New Itinerary'),
-                                        content: TextField(
-                                          controller: nameController,
-                                          decoration: const InputDecoration(
-                                              hintText:
-                                                  "e.g., 'My Weekend Getaway'"),
-                                          autofocus: true,
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            child: const Text('Cancel'),
-                                            onPressed: () =>
-                                                Navigator.of(context).pop(),
-                                          ),
-                                          TextButton(
-                                            child: const Text('Create'),
-                                            onPressed: () {
-                                              if (nameController
-                                                  .text.isNotEmpty) {
-                                                Navigator.of(context)
-                                                    .pop(nameController.text);
-                                              }
-                                            },
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (newName == null || newName.isEmpty)
-                                      return;
-                                    final newDoc = await FirebaseFirestore
-                                        .instance
-                                        .collection('users')
-                                        .doc(_currentUser!.uid)
-                                        .collection('itineraries')
-                                        .add({
-                                      'name': newName,
-                                      'createdAt': FieldValue.serverTimestamp(),
-                                      'lastModified':
-                                          FieldValue.serverTimestamp(),
-                                    });
-                                    itineraryId = newDoc.id;
-                                  }
-
-                                  if (mounted) Navigator.of(context).pop();
-
-                                  if (mounted) {
-                                    final result =
-                                        await Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                        builder: (context) => EventEditorScreen(
-                                          itineraryId: itineraryId,
-                                          initialPoiData: data,
-                                          itineraryName: '',
-                                        ),
-                                      ),
-                                    );
-                                    if (result is String && mounted) {
+                                  icon: const Icon(Icons.playlist_add),
+                                  label: const Text("Add to Plan"),
+                                  onPressed: () async {
+                                    if (_currentUser == null) {
                                       ScaffoldMessenger.of(context)
                                           .showSnackBar(
-                                        SnackBar(
-                                          content: Text(result),
-                                          backgroundColor: Colors.green,
+                                        const SnackBar(
+                                            content: Text(
+                                                'You must be logged in to add to a plan.')),
+                                      );
+                                      return;
+                                    }
+                                    final Map<String, dynamic>?
+                                        selectedItinerary =
+                                        await _showItinerarySelectorDialog();
+                                    if (selectedItinerary == null) return;
+
+                                    String itineraryId =
+                                        selectedItinerary['id']!;
+                                    if (itineraryId == 'CREATE_NEW') {
+                                      final TextEditingController
+                                          nameController =
+                                          TextEditingController();
+                                      final String? newName =
+                                          await showDialog<String>(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: const Text('New Itinerary'),
+                                          content: TextField(
+                                            controller: nameController,
+                                            decoration: const InputDecoration(
+                                                hintText:
+                                                    "e.g., 'My Weekend Getaway'"),
+                                            autofocus: true,
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              child: const Text('Cancel'),
+                                              onPressed: () =>
+                                                  Navigator.of(context).pop(),
+                                            ),
+                                            TextButton(
+                                              child: const Text('Create'),
+                                              onPressed: () {
+                                                if (nameController
+                                                    .text.isNotEmpty) {
+                                                  Navigator.of(context)
+                                                      .pop(nameController.text);
+                                                }
+                                              },
+                                            ),
+                                          ],
                                         ),
                                       );
+                                      if (newName == null || newName.isEmpty)
+                                        return;
+                                      final newDoc = await FirebaseFirestore
+                                          .instance
+                                          .collection('users')
+                                          .doc(_currentUser!.uid)
+                                          .collection('itineraries')
+                                          .add({
+                                        'name': newName,
+                                        'createdAt':
+                                            FieldValue.serverTimestamp(),
+                                        'lastModified':
+                                            FieldValue.serverTimestamp(),
+                                      });
+                                      itineraryId = newDoc.id;
                                     }
-                                  }
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 14),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12)),
-                                  backgroundColor:
-                                      Theme.of(context).primaryColor,
+
+                                    if (mounted) Navigator.of(context).pop();
+
+                                    if (mounted) {
+                                      final result =
+                                          await Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              EventEditorScreen(
+                                            itineraryId: itineraryId,
+                                            initialPoiData: data,
+                                            itineraryName: '',
+                                          ),
+                                        ),
+                                      );
+                                      if (result is String && mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          SnackBar(
+                                            content: Text(result),
+                                            backgroundColor: Colors.green,
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
                                 ),
-                                icon: const Icon(Icons.directions,
-                                    color: Colors.white),
-                                label: const Text("Get Directions",
-                                    style: TextStyle(
-                                        fontSize: 16, color: Colors.white)),
-                                onPressed: () async {
-                                  Navigator.pop(context);
-                                  final lat = data['lat'] as double?;
-                                  final lng = data['lng'] as double?;
-                                  if (lat != null && lng != null) {
-                                    await _drawRouteToPoi(
-                                        lat, lng, _currentTravelMode);
-                                  }
-                                },
                               ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                      ],
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(12)),
+                                    backgroundColor:
+                                        Theme.of(context).primaryColor,
+                                  ),
+                                  icon: const Icon(Icons.directions,
+                                      color: Colors.white),
+                                  label: const Text("Get Directions",
+                                      style: TextStyle(
+                                          fontSize: 16, color: Colors.white)),
+                                  onPressed: () async {
+                                    Navigator.pop(context);
+                                    final lat = data['lat'] as double?;
+                                    final lng = data['lng'] as double?;
+                                    if (lat != null && lng != null) {
+                                      await _drawRouteToPoi(
+                                          lat, lng, _currentTravelMode);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                      ),
                     ),
                   ),
                 );
