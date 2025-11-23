@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import '../services/tutorial_service.dart';
 import 'event_editor_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -35,6 +36,9 @@ class ItineraryDetailScreen extends StatefulWidget {
 class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
     with TickerProviderStateMixin {
   // ... (no changes to state variables) ...
+  // 🆕 ADD THESE KEYS
+  final GlobalKey _fabKey = GlobalKey();
+  final GlobalKey _mapButtonKey = GlobalKey();
   Timer? _liveTimer;
   String? _currentEventId;
   bool _isToday = false;
@@ -52,6 +56,20 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
       if (mounted) {
         _findCurrentEvent();
       }
+    });
+    // 🆕 ADD THIS BLOCK
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 2-second delay to ensure Firestore data loads and ListView renders
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          // Import tutorial_service.dart
+          TutorialService.showDetailTutorial(
+            context: context,
+            mapKey: _mapButtonKey,
+            addKey: _fabKey,
+          );
+        }
+      });
     });
   }
 
@@ -744,6 +762,9 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
                                   ),
                                 ),
                                 TextButton.icon(
+                                  // 🆕 ASSIGN KEY ONLY IF IT IS THE FIRST ITEM
+                                  key: index == 0 ? _mapButtonKey : null,
+
                                   icon: const Icon(Icons.map_outlined),
                                   label: const Text('Show on Map'),
                                   onPressed: () async {
@@ -840,6 +861,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
           ],
         ),
         floatingActionButton: FloatingActionButton(
+          key: _fabKey, // 👈 ASSIGN KEY HERE
           onPressed: () {
             _navigateToEditor();
           },

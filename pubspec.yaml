@@ -100,8 +100,6 @@ flutter:
     - assets/images/tourguide_bg.png
     - assets/images/hotline_bg.png
     - assets/images/profile_bg.png
-    - assets/images/profile_bg.png
-    - assets/icons/
     - assets/gifs/tourist_walk.gif
     - assets/gifs/tourist.gif
 

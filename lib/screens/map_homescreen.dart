@@ -42,6 +42,7 @@ import '../services/tutorial_service.dart';
 import '../widgets/responsible_tourism_dialog.dart';
 import '../widgets/enable_location_dialog.dart';
 import '../widgets/guide_card.dart';
+import 'package:flutter/foundation.dart';
 
 enum LocationButtonState {
   centered,
@@ -65,6 +66,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final GlobalKey _searchKey = GlobalKey();
   final GlobalKey _filterKey = GlobalKey();
   final GlobalKey _transportKey = GlobalKey();
+  final Map<int, BitmapDescriptor> _cachedNumberedMarkers = {};
   bool _isFollowingUser = true;
   Map<String, String>? _itinerarySummary; // 👈 ADD THIS
   String? _itineraryTitle;
@@ -249,6 +251,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<BitmapDescriptor> _createNumberedCircleMarker(int number) async {
+    // 🚀 OPTIMIZATION: Return cached version if it exists
+    if (_cachedNumberedMarkers.containsKey(number)) {
+      return _cachedNumberedMarkers[number]!;
+    }
     const double size = 70; // The diameter of the circle
     final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
     final Canvas canvas = Canvas(pictureRecorder);
@@ -302,7 +308,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
 
-    return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+// 🚀 OPTIMIZATION: Save to cache before returning
+    final bitmap = BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
+    _cachedNumberedMarkers[number] = bitmap;
+    return bitmap;
   }
 
   // The main function to draw the itinerary
@@ -600,29 +609,39 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _rebuildMarkers() async {
+    if (_mapController == null) return;
+
+    // 🚀 OPTIMIZATION: Get the current visible boundaries of the map
+    final LatLngBounds visibleRegion = await _mapController!.getVisibleRegion();
+
     // 1. Determine if we are in a mode that requires "Clutter Reduction"
-    // (Itinerary or Transport Route active)
     final bool useStrictFiltering =
         _isItineraryRouteVisible || _currentTransportRouteData != null;
 
     List<Map<String, dynamic>> visiblePois;
 
-    if (useStrictFiltering) {
-      // 🔒 Strict Mode: Show ONLY Tourist Spots
-      // (Keeps the map clean when viewing a static route plan)
-      visiblePois =
-          _allPoiData.where((p) => p['type'] == 'Tourist Spots').toList();
-    } else {
-      // 🌍 Standard Mode (Normal Map & Live Navigation)
+    // 🚀 OPTIMIZATION: Filter _allPoiData to only include points inside the screen
+    // We use a simple helper function check (defined below)
+    final List<Map<String, dynamic>> pointsOnScreen = _allPoiData.where((p) {
+      final lat = p['lat'] as double?;
+      final lng = p['lng'] as double?;
+      if (lat == null || lng == null) return false;
 
-      // ⭐️ NEW LOGIC: If user selected a specific filter (e.g. "Food"), show ALL of them.
-      // We only use "Smart Zoom" filtering when browsing "All" categories.
+      return visibleRegion.contains(LatLng(lat, lng));
+    }).toList();
+
+    if (useStrictFiltering) {
+      // Use the reduced list
+      visiblePois =
+          pointsOnScreen.where((p) => p['type'] == 'Tourist Spots').toList();
+    } else {
       if (_selectedFilter != 'All') {
-        visiblePois = _allPoiData;
+        // Use the reduced list
+        visiblePois = pointsOnScreen;
       } else {
-        // Use the smart zoom logic (e.g., hide hotels when zoomed out)
+        // Pass the reduced list to your smart zoom logic
         visiblePois = _markerService.filterPoisByZoom(
-          allPois: _allPoiData,
+          allPois: pointsOnScreen, // <-- Pass filtered list here
           zoomLevel: _currentZoom,
         );
       }
@@ -633,13 +652,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       poiList: visiblePois,
       zoomLevel: _currentZoom,
       onTap: (data) {
+        // 🚀 NEW: Animate Camera on Tap
+        final lat = data['lat'] as double?;
+        final lng = data['lng'] as double?;
+        if (lat != null && lng != null) {
+          _focusOnPoi(lat, lng);
+        }
+
         _showPoiSheet(
           name: data['name'] ?? 'Unnamed',
           description: data['description'] ?? 'No description available.',
           data: data,
         );
       },
-      highlightedId: _highlightedPoiId, // ⭐️ PASS THE HIGHLIGHTED ID ⭐️
+      highlightedId: _highlightedPoiId,
     );
 
     // 3. Preserve existing Route Markers
@@ -1531,16 +1557,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   // ⭐️ --- END OF NEW FUNCTION --- ⭐️
 
   void _onMapCreated(GoogleMapController controller) async {
-    // 1. Make it async
     _mapController = controller;
 
-    // 2. Read the preference
     final prefs = await SharedPreferences.getInstance();
-    final styleName =
-        prefs.getString('mapStyle') ?? 'tourism.json'; // Default to tourism
+    // 1. Get the saved style (could be 'tourism.json' OR 'satellite')
+    final savedStyle = prefs.getString('mapStyle') ?? 'tourism.json';
 
-    // 3. Set the style from preferences
-    _setMapStyle(styleName);
+    if (savedStyle == 'satellite') {
+      // 2. If 'satellite', switch the mode and DON'T load JSON
+      setState(() {
+        _currentMapType = MapType.satellite;
+      });
+    } else {
+      // 3. If normal/tourism, ensure mode is normal AND load JSON
+      setState(() {
+        _currentMapType = MapType.normal;
+      });
+      _setMapStyle(savedStyle);
+    }
   }
 
   void _onFilterChanged(String? newFilter) {
@@ -1691,14 +1725,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     // --- 2. DATA EXTRACTION ---
     // final poiType = data['type'] as String?; // Unused variable removed
+    final String poiType = data['type'] ?? ''; // ⭐️ Get the type safely
     final String? openingHours = data['openingHours'] as String?;
     final String? contactNumber = data['contactNumber'] as String?;
     final String? status = data['status'] as String?;
     final bool? guideRequired = data['guideRequired'] as bool?;
 
-    // ⭐️ SMART LINE OF BUSINESS EXTRACTION ⭐️
-    String? specificType;
-    if (description.contains('Type:')) {
+    // ⭐️ NEW: DEFINE VISIBILITY FLAGS ⭐️
+    final bool isTouristSpot = poiType == 'Tourist Spots';
+    final bool showContactInfo = poiType == 'Food & Dining' ||
+        poiType == 'Business Establishments' ||
+        poiType == 'Accommodations' ||
+        poiType == 'Services' ||
+        poiType == 'Agencies and Offices';
+
+    // ⭐️ UPDATED LOGIC: Read directly from the new 'specificType' field ⭐️
+    String? specificType = data['specificType'] as String?;
+
+    // Safety Fallback: If the field is missing (script hasn't run on this doc yet),
+    // we still try to extract it from the description.
+    if (specificType == null && description.contains('Type:')) {
       final RegExp typeRegex = RegExp(r'Type:\s*([^.\n]+)');
       final match = typeRegex.firstMatch(description);
       if (match != null) {
@@ -1738,8 +1784,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           builder: (BuildContext context, StateSetter setSheetState) {
             return DraggableScrollableSheet(
               expand: false,
-              initialChildSize: 0.4, // ⭐️ NEW: Starts 40% visible
-              minChildSize: 0.4, // ⭐️ NEW: Can't collapse below 40%
+              initialChildSize:
+                  0.55, // 🚀 NEW: Starts slightly more than half screen
+              minChildSize: 0.4, // Keep min low so they can swipe it down
               maxChildSize: 0.95,
               builder: (context, scrollController) {
                 return SingleChildScrollView(
@@ -1822,6 +1869,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                         borderRadius: BorderRadius.circular(16),
                                         child: CachedNetworkImage(
                                           imageUrl: displayImages[index],
+                                          memCacheHeight:
+                                              600, // 🚀 ADD THIS LINE
                                           fit: BoxFit.cover,
                                           width: double.infinity,
                                           placeholder: (context, url) =>
@@ -1880,33 +1929,41 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         const SizedBox(height: 12),
 
                         // ⭐️ SHORT CHIPS ROW ⭐️
+                        // ⭐️ SHORT CHIPS ROW (Conditional) ⭐️
                         Wrap(
                           spacing: 8.0,
                           runSpacing: 8.0,
                           children: [
-                            if (status != null && status.isNotEmpty)
-                              _buildStatusChip(status),
-                            if (guideRequired != null)
-                              _buildDetailChip(
-                                icon: Icons.person_search_outlined,
-                                label: 'Guide',
-                                value:
-                                    guideRequired ? 'Required' : 'Not Required',
-                              ),
-                            if (entranceFeeText.isNotEmpty)
-                              _buildDetailChip(
-                                icon: Icons.local_activity_outlined,
-                                label: 'Fee',
-                                value: entranceFeeText,
-                              ),
+                            // Only show Status, Guide, Fee for Tourist Spots
+                            if (isTouristSpot) ...[
+                              if (status != null && status.isNotEmpty)
+                                _buildStatusChip(status),
+                              if (guideRequired != null)
+                                _buildDetailChip(
+                                  icon: Icons.person_search_outlined,
+                                  label: 'Guide',
+                                  value: guideRequired
+                                      ? 'Required'
+                                      : 'Not Required',
+                                ),
+                              if (entranceFeeText.isNotEmpty)
+                                _buildDetailChip(
+                                  icon: Icons.local_activity_outlined,
+                                  label: 'Fee',
+                                  value: entranceFeeText,
+                                ),
+                            ],
                           ],
                         ),
 
                         const SizedBox(height: 16),
 
                         // ⭐️ DETAILED INFO SECTION ⭐️
+                        // Check if we have anything to show
                         if ((openingHours != null && openingHours.isNotEmpty) ||
-                            (contactNumber != null && contactNumber.isNotEmpty))
+                            (showContactInfo &&
+                                contactNumber != null &&
+                                contactNumber.isNotEmpty))
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 16, vertical: 8),
@@ -1917,20 +1974,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             ),
                             child: Column(
                               children: [
+                                // Opening Hours (Show for everyone)
                                 if (openingHours != null &&
                                     openingHours.isNotEmpty)
                                   _buildInfoRow(Icons.access_time,
                                       "Opening Hours", openingHours),
+
+                                // Divider (Only if both exist)
                                 if ((openingHours != null &&
                                         openingHours.isNotEmpty) &&
-                                    (contactNumber != null &&
+                                    (showContactInfo &&
+                                        contactNumber != null &&
                                         contactNumber.isNotEmpty))
                                   Padding(
                                     padding: const EdgeInsets.only(left: 50),
                                     child: Divider(
                                         height: 1, color: Colors.grey.shade300),
                                   ),
-                                if (contactNumber != null &&
+
+                                // Contact Number (Conditional)
+                                if (showContactInfo &&
+                                    contactNumber != null &&
                                     contactNumber.isNotEmpty)
                                   _buildInfoRow(Icons.phone_outlined,
                                       "Contact Number", contactNumber),
@@ -2175,13 +2239,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _setMapStyle(String fileName) async {
     if (_mapController == null) return;
 
-    // Load the JSON file from assets
-    final style = await DefaultAssetBundle.of(
-      context,
-    ).loadString('assets/map_styles/$fileName');
+    // Safety check: Don't try to load 'satellite' as a JSON file
+    if (fileName == 'satellite') return;
 
-    // Apply it to the map
-    _mapController!.setMapStyle(style);
+    try {
+      final style = await DefaultAssetBundle.of(context)
+          .loadString('assets/map_styles/$fileName');
+      _mapController!.setMapStyle(style);
+    } catch (e) {
+      print("Error loading map style: $e");
+    }
   }
 
   // In map_homescreen.dart
@@ -2316,45 +2383,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final userLocation = LatLng(position.latitude, position.longitude);
 
     // 3. Use the cached POI list.
-    if (_allPoiData.isEmpty) {
-      print("Nearby: POI data is empty, skipping calculation.");
-      return;
-    }
+    // 🚀 OPTIMIZATION: Run heavy math in a background isolate
+    final List<Map<String, dynamic>> nearbyList = await compute(
+      _calculateNearbyPoisBackground,
+      {
+        'pois': _allPoiData,
+        'location': userLocation,
+      },
+    );
 
-    // 4. Calculate distances and filter
-    final List<Map<String, dynamic>> nearbyList = [];
-    for (final poi in _allPoiData) {
-      final lat = poi['lat'] as double?;
-      final lng = poi['lng'] as double?;
-
-      if (lat != null && lng != null) {
-        final double distance = Geolocator.distanceBetween(
-          userLocation.latitude,
-          userLocation.longitude,
-          lat,
-          lng,
-        );
-
-        // 5. Set a radius (e.g., 2000 meters = 2km)
-        if (distance <= 2000) {
-          // Create a copy of the map and add the distance
-          final newPoiData = Map<String, dynamic>.from(poi);
-          newPoiData['distance'] = distance; // Add distance for sorting
-          nearbyList.add(newPoiData);
-        }
-      }
-    }
-
-    // 6. Sort the list by distance (closest first)
-    nearbyList.sort(
-        (a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
-
-    // 7. Update the state
     if (mounted) {
       setState(() {
         _nearbyPois = nearbyList;
       });
-      print("Nearby: Updated list with ${_nearbyPois.length} places.");
     }
   }
 
@@ -2478,6 +2519,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // 🚀 NEW HELPER: Centers the camera with an offset to show the pin ABOVE the sheet
+  Future<void> _focusOnPoi(double lat, double lng) async {
+    if (_mapController == null) return;
+
+    // 1. Define Offset
+    // We increase this from 0.0012 to 0.0025 to push the camera lower,
+    // effectively moving the pin HIGHER up the screen.
+    const double latOffset = 0.0025;
+
+    // 2. Animate
+    await _mapController!.animateCamera(
+      CameraUpdate.newLatLngZoom(
+        LatLng(lat - latOffset, lng),
+        16.5, // Nice close zoom level
+      ),
+    );
+  }
+
 // ⭐️ ADD THIS NEW HELPER FUNCTION ⭐️
   void _updateHeadsUpEvent(QuerySnapshot snapshot) {
     if (!mounted) return;
@@ -2596,7 +2655,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 1,
+        distanceFilter: 10, // 🚀 CHANGED to 10 meters
       ),
     ).listen((Position position) async {
       if (!_isNavigating || _currentStepIndex >= _navigationSteps.length)
@@ -3063,7 +3122,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             right: 12,
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeInOut,
-            child: CompassWidget(),
+            child: const RepaintBoundary(
+              child: CompassWidget(),
+            ),
           ),
           // --- END OF COMPASS FIX ---
 
@@ -3242,28 +3303,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                     final lng = result['lng'] as double?;
 
                                     if (lat != null && lng != null) {
-                                      // 1. Animate Camera (Zoom in slightly above the target)
-                                      const double latOffset = 0.0012;
-                                      await _mapController?.animateCamera(
-                                        CameraUpdate.newLatLngZoom(
-                                          LatLng(lat + latOffset, lng),
-                                          16,
-                                        ),
-                                      );
+                                      await _focusOnPoi(
+                                          lat, lng); // 👈 Use Helper
 
-                                      // 2. Show the Sheet after animation
                                       if (mounted) {
+                                        // Small delay to let animation start
                                         Future.delayed(
-                                          const Duration(milliseconds: 300),
-                                          () {
-                                            _showPoiSheet(
-                                              name: result['name'] ?? 'Unnamed',
-                                              description:
-                                                  result['description'] ?? '',
-                                              data: result,
-                                            );
-                                          },
-                                        );
+                                            const Duration(milliseconds: 300),
+                                            () {
+                                          _showPoiSheet(
+                                            name: result['name'] ?? 'Unnamed',
+                                            description:
+                                                result['description'] ?? '',
+                                            data: result,
+                                          );
+                                        });
                                       }
                                     }
                                   }
@@ -3368,11 +3422,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 right: 0,
                 child: DiscoveryPanel(
                   nearbyPois: _nearbyPois,
-                  onPoiSelected: (poiData) => _showPoiSheet(
-                    name: poiData['name'] ?? '',
-                    description: poiData['description'] ?? '',
-                    data: poiData,
-                  ),
+                  onPoiSelected: (poiData) async {
+                    final lat = poiData['lat'] as double?;
+                    final lng = poiData['lng'] as double?;
+
+                    if (lat != null && lng != null) {
+                      await _focusOnPoi(lat, lng); // 👈 Use Helper
+                    }
+
+                    if (mounted) {
+                      _showPoiSheet(
+                        name: poiData['name'] ?? '',
+                        description: poiData['description'] ?? '',
+                        data: poiData,
+                      );
+                    }
+                  },
                 ),
               ),
           ],
@@ -3838,38 +3903,40 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     return Positioned(
-      // --- ⭐️ THIS IS THE FIX ⭐️ ---
-      // We increased 120 to 160 to lift it
-      // above the new, taller navigation bar.
-      bottom: 160,
-      // --- ⭐️ END OF FIX ⭐️ ---
-      left: 12,
-      child: Card(
-        elevation: 8,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _currentSpeed.toStringAsFixed(0), // The speed
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
+        // --- ⭐️ THIS IS THE FIX ⭐️ ---
+        // We increased 120 to 160 to lift it
+        // above the new, taller navigation bar.
+        bottom: 160,
+        // --- ⭐️ END OF FIX ⭐️ ---
+        left: 12,
+        child: RepaintBoundary(
+          // 🚀 ADD THIS WRAPPER
+          child: Card(
+            elevation: 8,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _currentSpeed.toStringAsFixed(0), // The speed
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Text(
+                    "km/h",
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
               ),
-              const Text(
-                "km/h",
-                style: TextStyle(fontSize: 12),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
+        ));
   }
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _closureSub;
@@ -4163,4 +4230,36 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         dateA.month == dateB.month &&
         dateA.day == dateB.day;
   }
+}
+
+// 🚀 Add this OUTSIDE of your _MapScreenState class
+List<Map<String, dynamic>> _calculateNearbyPoisBackground(
+    Map<String, dynamic> params) {
+  final List<Map<String, dynamic>> allPois = params['pois'];
+  final LatLng userLocation = params['location'];
+  final List<Map<String, dynamic>> nearbyList = [];
+
+  for (final poi in allPois) {
+    final lat = poi['lat'] as double?;
+    final lng = poi['lng'] as double?;
+
+    if (lat != null && lng != null) {
+      final double distance = Geolocator.distanceBetween(
+        userLocation.latitude,
+        userLocation.longitude,
+        lat,
+        lng,
+      );
+
+      if (distance <= 2000) {
+        final newPoiData = Map<String, dynamic>.from(poi);
+        newPoiData['distance'] = distance;
+        nearbyList.add(newPoiData);
+      }
+    }
+  }
+
+  nearbyList.sort(
+      (a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
+  return nearbyList;
 }

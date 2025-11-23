@@ -155,6 +155,54 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _showEditPhoneDialog() async {
+    final TextEditingController phoneController = TextEditingController();
+    phoneController.text = _userData['phone'] ?? '';
+
+    final newPhone = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update Phone Number'),
+        content: TextField(
+          controller: phoneController,
+          keyboardType: TextInputType.phone,
+          decoration: const InputDecoration(hintText: "Enter phone number"),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, phoneController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (newPhone != null && newPhone.trim().isNotEmpty) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.userId)
+            .update({'phone': newPhone.trim()});
+
+        if (mounted) {
+          setState(() {
+            _userData['phone'] = newPhone.trim();
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Phone number updated!")),
+          );
+        }
+      } catch (e) {
+        // Handle error
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final userData = _userData;
@@ -291,7 +339,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   _buildDetailRow(Icons.email_outlined, "Email", email,
                       isEmail: true),
-                  _buildDetailRow(Icons.phone_outlined, "Phone", phone),
+                  _buildEditableDetailRow(
+                    Icons.phone_outlined,
+                    "Phone",
+                    phone.isEmpty ? 'Tap to add number' : phone, // Helpful hint
+                    onEdit: _showEditPhoneDialog, // 👈 Call new function
+                  ),
                   _buildDetailRow(
                     Icons.calendar_today_outlined,
                     "Member Since",
@@ -514,10 +567,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   // ⭐️ --- WIDGET REVAMPED --- ⭐️
   /// Builds the ChoiceChips for map style selection
   Widget _buildMapStyleChips() {
-    // A map of the style file name to its display name
+    // Keys correspond to what we save in SharedPreferences
     final Map<String, String> styles = {
-      'tourism.json': 'Tourism',
-      'clean.json': 'Clean',
+      'tourism.json': 'Default (Normal)',
+      'satellite': 'Satellite', // ⭐️ NEW OPTION
     };
 
     return Column(
@@ -528,7 +581,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Icon(Icons.map_outlined, color: Colors.grey.shade600, size: 20),
             const SizedBox(width: 16),
             Text(
-              "Default Map Style",
+              "Default Map Type",
               style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
             ),
           ],
@@ -536,17 +589,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
         const SizedBox(height: 10),
         Wrap(
           spacing: 8.0,
-          children: styles.keys.map((styleFile) {
+          children: styles.keys.map((styleKey) {
+            final bool isSelected = (_selectedMapStyle == styleKey) ||
+                // Handle case where user has never set a preference (default to tourism)
+                (_selectedMapStyle == null && styleKey == 'tourism.json');
+
             return ChoiceChip(
-              label: Text(styles[styleFile]!),
+              label: Text(styles[styleKey]!),
               labelStyle: TextStyle(
-                color:
-                    _selectedMapStyle == styleFile ? themeColor : Colors.black,
+                color: isSelected ? themeColor : Colors.black,
               ),
-              selected: _selectedMapStyle == styleFile,
+              selected: isSelected,
               onSelected: (bool selected) {
                 if (selected) {
-                  _setMapStylePreference(styleFile);
+                  _setMapStylePreference(styleKey);
                 }
               },
               selectedColor: themeColor.withOpacity(0.1),
@@ -554,9 +610,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),
                 side: BorderSide(
-                  color: _selectedMapStyle == styleFile
-                      ? themeColor
-                      : Colors.grey.shade300,
+                  color: isSelected ? themeColor : Colors.grey.shade300,
                 ),
               ),
             );

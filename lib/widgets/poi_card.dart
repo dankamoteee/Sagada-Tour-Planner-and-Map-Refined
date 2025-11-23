@@ -68,6 +68,9 @@ class PoiCard extends StatelessWidget {
             if (displayImageUrl != null && displayImageUrl.isNotEmpty)
               CachedNetworkImage(
                 imageUrl: displayImageUrl,
+                // 🚀 PERFORMANCE UPGRADE:
+                // This tells Flutter to decode the image at a smaller size, saving RAM.
+                memCacheHeight: 400,
                 fit: BoxFit.cover,
                 // Show a loading spinner while the image downloads
                 placeholder: (context, url) => const Center(

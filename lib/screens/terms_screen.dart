@@ -1,5 +1,7 @@
 // lib/screens/terms_screen.dart
-
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'map_homescreen.dart'; // Import MapScreen so we can go there directly
 import 'package:flutter/material.dart';
 import 'gradient_background.dart';
 import 'read_terms_screen.dart.dart';
@@ -27,12 +29,56 @@ class _TermsAgreementScreenState extends State<TermsAgreementScreen> {
   }
 
   void _onContinue() async {
-    if (_isChecked) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('accepted_terms', true);
+    if (!_isChecked) return;
 
-      // --- 3. THIS IS THE CHANGE ---
-      // Navigate to the AddProfilePictureScreen instead of the MapScreen
+    setState(() {
+      // Optional: Show a loading indicator if you want,
+      // but for a quick check, blocking interaction is usually enough.
+    });
+
+    // 1. Save that they accepted terms
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('accepted_terms', true);
+
+    if (!mounted) return;
+
+    // 2. Check if user already has a profile picture
+    final user = FirebaseAuth.instance.currentUser;
+    bool hasProfilePic = false;
+
+    if (user != null) {
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+
+        if (doc.exists) {
+          final data = doc.data();
+          final String? url = data?['profilePictureUrl'];
+          // Check if URL exists and is not empty
+          if (url != null && url.isNotEmpty) {
+            hasProfilePic = true;
+          }
+        }
+      } catch (e) {
+        print("Error checking profile pic: $e");
+        // If error, safer to assume false and let them try to add one,
+        // or assume true to avoid annoying them. Let's stick to the flow.
+      }
+    }
+
+    if (!mounted) return;
+
+    // 3. Decide where to go
+    if (hasProfilePic) {
+      // User already has a pic -> Go straight to Map
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const MapScreen()),
+      );
+    } else {
+      // New user or no pic -> Go to Add Picture Screen
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(

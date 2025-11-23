@@ -1,39 +1,8 @@
-import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
-// ⭐️ --- ADD THIS IMPORT --- ⭐️
 import 'package:cached_network_image/cached_network_image.dart';
 
-// 1. The Data Model for your Hotline
-// This makes your code cleaner and safer than using raw Maps.
-class Hotline {
-  final String agencyName;
-  final String imageUrl; // This will hold the base64 string OR a URL
-  final String phone;
-  final String address;
-
-  Hotline({
-    required this.agencyName,
-    required this.imageUrl,
-    required this.phone,
-    required this.address,
-  });
-
-  factory Hotline.fromFirestore(DocumentSnapshot doc) {
-    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-    return Hotline(
-      agencyName: data['agencyName'] ?? 'Unknown Agency',
-      imageUrl: data['imageUrl'] ?? '',
-      phone: data['phone'] ?? 'No number',
-      address: data['address'] ?? 'No address',
-    );
-  }
-}
-
-// 2. The Main Screen Widget
 class HotlineScreen extends StatefulWidget {
   const HotlineScreen({super.key});
 
@@ -42,302 +11,291 @@ class HotlineScreen extends StatefulWidget {
 }
 
 class _HotlineScreenState extends State<HotlineScreen> {
-  //late Future<List<Hotline>> _hotlinesFuture;
-  List<Hotline> _allHotlines = [];
-  late Future<void> _fetchFuture; // This will now just manage loading state
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = "";
 
   @override
-  void initState() {
-    super.initState();
-    // The future now just triggers the fetch
-    _fetchFuture = _fetchHotlines();
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
-  Future<void> _saveAllContacts() async {
-    // 1. Request permission directly from the package
-    if (await FlutterContacts.requestPermission()) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Saving contacts...')));
-
-      int savedCount = 0;
-      for (var hotline in _allHotlines) {
-        try {
-          final newContact = Contact()
-            ..name.first = hotline.agencyName
-            ..phones = [Phone(hotline.phone)];
-
-          await newContact.insert();
-          savedCount++;
-        } catch (e) {
-          print('Error saving contact ${hotline.agencyName}: $e');
-        }
+  // ⭐️ HELPER: General URL Launcher
+  Future<void> _launchUrl(String urlString) async {
+    final Uri url = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        // Fallback for some devices
+        await launchUrl(url, mode: LaunchMode.externalApplication);
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$savedCount hotline numbers saved successfully!'),
-        ),
-      );
-    } else {
-      // 2. Handle permission denial
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Permission denied. Cannot save contacts.'),
-        ),
-      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Could not open $urlString")),
+        );
+      }
     }
-  }
-
-  // Fetches data from Firestore and converts it to a list of Hotline objects
-  Future<void> _fetchHotlines() async {
-    final querySnapshot =
-        await FirebaseFirestore.instance.collection('Hotline').get();
-
-    final hotlines =
-        querySnapshot.docs.map((doc) => Hotline.fromFirestore(doc)).toList();
-
-    hotlines.sort((a, b) => a.agencyName.compareTo(b.agencyName));
-
-    // Save the fetched and sorted list to the state variable
-    setState(() {
-      _allHotlines = hotlines;
-    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: FutureBuilder<void>(
-        future: _fetchFuture,
-        builder: (context, snapshot) {
-          // Show a loading indicator
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          // Show an error message
-          if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          }
-
-          // The main layout is now a CustomScrollView
-          return CustomScrollView(
-            slivers: [
-              // 1. The Collapsing App Bar
-              SliverAppBar(
-                pinned: true,
-                expandedHeight: 220.0,
-                backgroundColor: const Color(0xFF3A6A55),
-                foregroundColor: Colors.white,
-                flexibleSpace: FlexibleSpaceBar(
-                  centerTitle: true,
-                  title: const Text(
-                    'Sagada Hotlines',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+      // ⭐️ SliverAppBar for a nice collapsing header effect
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            pinned: true,
+            expandedHeight: 200.0,
+            backgroundColor: const Color(0xFF3A6A55),
+            flexibleSpace: FlexibleSpaceBar(
+              title: const Text(
+                "Emergency Hotlines",
+                style:
+                    TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              centerTitle: true,
+              background: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.asset(
+                    'assets/images/hotline_background.jpg', // Ensure this asset exists
+                    fit: BoxFit.cover,
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.black.withOpacity(0.7),
+                        ],
+                      ),
                     ),
                   ),
-                  background: Stack(
-                    fit: StackFit.expand,
+                ],
+              ),
+            ),
+          ),
+
+          // Search Bar
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value.toLowerCase();
+                  });
+                },
+                decoration: InputDecoration(
+                  hintText: 'Search agency...',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true,
+                  fillColor: Colors.grey[200],
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // List of Hotlines
+          StreamBuilder<QuerySnapshot>(
+            stream:
+                FirebaseFirestore.instance.collection('Hotline').snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const SliverFillRemaining(
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                return const SliverFillRemaining(
+                  child: Center(child: Text("No hotlines found.")),
+                );
+              }
+
+              final allDocs = snapshot.data!.docs;
+              // Client-side filtering
+              final filteredDocs = allDocs.where((doc) {
+                final data = doc.data() as Map<String, dynamic>;
+                final name =
+                    (data['agencyName'] ?? '').toString().toLowerCase();
+                return name.contains(_searchQuery);
+              }).toList();
+
+              if (filteredDocs.isEmpty) {
+                return const SliverFillRemaining(
+                  child: Center(child: Text("No matching results.")),
+                );
+              }
+
+              return SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final doc = filteredDocs[index];
+                    return _buildHotlineCard(doc);
+                  },
+                  childCount: filteredDocs.length,
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHotlineCard(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final String agencyName = data['agencyName'] ?? 'Unknown Agency';
+    final String address = data['address'] ?? 'Sagada, Mountain Province';
+    final String? imageUrl = data['imageUrl'];
+
+    // ⭐️ NEW: PARSE CONTACTS MAP ⭐️
+    final Map<String, dynamic> contacts =
+        data['contacts'] is Map ? data['contacts'] as Map<String, dynamic> : {};
+
+    final String? phone = contacts['contactNumber']?.toString();
+    final String? email = contacts['email']?.toString();
+    final String? fbName = contacts['facebook']?.toString();
+    // Note: 'messenger' field usually just duplicates the name or ID,
+    // but we can assume it links to the same FB profile unless you have a specific m.me link.
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 3,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. Image Header (Optional: Only if URL exists)
+          if (imageUrl != null && imageUrl.isNotEmpty)
+            SizedBox(
+              height: 140,
+              width: double.infinity,
+              child: CachedNetworkImage(
+                imageUrl: imageUrl,
+                fit: BoxFit.cover,
+                memCacheHeight: 400, // 🚀 Optimization
+                placeholder: (context, url) =>
+                    Container(color: Colors.grey[300]),
+                errorWidget: (context, url, error) => Container(
+                  color: Colors.grey[300],
+                  child: const Icon(Icons.local_hospital,
+                      size: 40, color: Colors.grey),
+                ),
+              ),
+            ),
+
+          // 2. Agency Info
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  agencyName,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF3A6A55),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    const Icon(Icons.location_on, size: 16, color: Colors.grey),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        address,
+                        style: const TextStyle(
+                            fontSize: 13, color: Colors.black87),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 8),
+
+                // ⭐️ 3. DYNAMIC CONTACT BUTTONS ⭐️
+                // We wrap them in a scrolling row in case there are many
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
                     children: [
-                      Image.asset(
-                        'assets/images/hotline_background.jpg',
-                        fit: BoxFit.cover,
-                      ),
-                      Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.black.withOpacity(0.7),
-                            ],
-                          ),
+                      // A. Phone Button
+                      if (phone != null && phone.isNotEmpty)
+                        _buildContactButton(
+                          icon: Icons.phone,
+                          label: "Call",
+                          color: Colors.green,
+                          onTap: () => _launchUrl("tel:$phone"),
                         ),
-                      ),
+
+                      // B. Email Button
+                      if (email != null && email.isNotEmpty)
+                        _buildContactButton(
+                          icon: Icons.email,
+                          label: "Email",
+                          color: Colors.orange,
+                          onTap: () => _launchUrl("mailto:$email"),
+                        ),
+
+                      // C. Facebook Button
+                      if (fbName != null && fbName.isNotEmpty)
+                        _buildContactButton(
+                          icon: Icons.facebook,
+                          label: "Facebook",
+                          color: Colors.blue,
+                          // This searches the page on FB or opens browser
+                          onTap: () => _launchUrl(
+                              "https://www.facebook.com/search/top?q=$fbName"),
+                        ),
                     ],
                   ),
                 ),
-              ),
-
-              // 2. The List of Hotline Cards (now using the state variable)
-              _allHotlines.isEmpty
-                  ? SliverFillRemaining(
-                      child: const Center(
-                        child: Text('No hotline numbers found.'),
-                      ),
-                    )
-                  : SliverList.builder(
-                      itemCount: _allHotlines.length,
-                      itemBuilder: (context, index) {
-                        return HotlineCard(hotline: _allHotlines[index]);
-                      },
-                    ),
-            ],
-          );
-        },
+              ],
+            ),
+          ),
+        ],
       ),
-      // --- ADD THIS FLOATING ACTION BUTTON ---
-      floatingActionButton: _allHotlines.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: _saveAllContacts,
-              label: const Text('Save All to Contacts'),
-              icon: const Icon(Icons.contact_phone),
-              backgroundColor: const Color(0xFF3A6A55),
-              foregroundColor: const Color.fromARGB(255, 255, 255, 255),
-            )
-          : null, // Hide the button if there are no hotlines
     );
   }
-}
 
-// 3. The Widget for Each Card in the List (REVAMPED)
-class HotlineCard extends StatelessWidget {
-  final Hotline hotline;
-
-  const HotlineCard({super.key, required this.hotline});
-
-  // Function to handle making a phone call
-  Future<void> _makePhoneCall(String phoneNumber, BuildContext context) async {
-    final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
-    if (!await launchUrl(launchUri)) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Could not call $phoneNumber')));
-    }
-  }
-
-  // ⭐️ --- KEEP THIS HELPER FUNCTION --- ⭐️
-  // Helper to decode the base64 image string
-  Uint8List? _decodeBase64Image(String base64String) {
-    try {
-      final String imageOnly = base64String.split(',').last;
-      return base64Decode(imageOnly);
-    } catch (e) {
-      print("Error decoding base64 image: $e");
-      return null;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // --- START OF MODIFICATION (HYBRID LOGIC) ---
-    // Define the CircleAvatar first
-    CircleAvatar logoAvatar;
-
-    if (hotline.imageUrl.startsWith('data:image')) {
-      // Case 1: It's a Base64 string
-      final imageBytes = _decodeBase64Image(hotline.imageUrl);
-      logoAvatar = CircleAvatar(
-        radius: 30,
-        backgroundColor: Colors.grey.shade200,
-        child: imageBytes != null
-            ? ClipOval(
-                child: Image.memory(
-                  imageBytes,
-                  fit: BoxFit.cover,
-                  width: 60,
-                  height: 60,
-                ),
-              )
-            : const Icon(Icons.business, color: Colors.grey),
-      );
-    } else if (hotline.imageUrl.startsWith('http')) {
-      // Case 2: It's a web URL
-      logoAvatar = CircleAvatar(
-        radius: 30,
-        backgroundColor: Colors.grey.shade200,
-        backgroundImage: CachedNetworkImageProvider(hotline.imageUrl),
-      );
-    } else {
-      // Case 3: It's empty or a fallback
-      logoAvatar = CircleAvatar(
-        radius: 30,
-        backgroundColor: Colors.grey.shade200,
-        child: const Icon(Icons.business, color: Colors.grey),
-      );
-    }
-    // --- END OF MODIFICATION ---
-
-    // Using ListTile provides excellent, consistent padding and alignment
-    return Card(
-      elevation: 3,
-      clipBehavior: Clip
-          .antiAlias, // Ensures InkWell ripple stays within the rounded corners
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () => _makePhoneCall(hotline.phone, context),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 16.0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // Left Side: Logo (now uses our hybrid widget)
-              logoAvatar,
-              const SizedBox(width: 16),
-
-              // Middle: Agency Name, Phone, and Address
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      hotline.agencyName,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 6), // Increased spacing
-                    Text(
-                      hotline.phone,
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey.shade800,
-                      ),
-                    ),
-                    if (hotline.address.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(
-                          top: 5.0,
-                        ), // Increased spacing
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(
-                              Icons.location_on,
-                              size: 14,
-                              color: Colors.grey.shade600,
-                            ),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                hotline.address,
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.grey.shade600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-
-              // Right Side: Speed Dial Icon (acts as a visual cue)
-              Icon(
-                Icons.phone,
-                size: 28,
-                color: const Color(0xFF3A6A55), // Your theme color
-              ),
-            ],
+  // ⭐️ Helper for Uniform Buttons
+  Widget _buildContactButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 12.0),
+      child: ElevatedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 18),
+        label: Text(label),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color.withOpacity(0.1), // Light pastel bg
+          foregroundColor: color, // Dark text/icon color
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(color: color.withOpacity(0.5)),
           ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
       ),
     );

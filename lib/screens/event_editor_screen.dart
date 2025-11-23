@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import '../services/poi_search_delegate.dart'; // Ensure this path is correct
+import '../services/poi_search_delegate.dart';
+import '../services/tutorial_service.dart'; // Ensure this path is correct
 
 class EventEditorScreen extends StatefulWidget {
   final String itineraryId;
@@ -23,6 +24,10 @@ class EventEditorScreen extends StatefulWidget {
 }
 
 class _EventEditorScreenState extends State<EventEditorScreen> {
+  // 🆕 ADD THESE 3 KEYS
+  final GlobalKey _timeKey = GlobalKey();
+  final GlobalKey _locationKey = GlobalKey();
+  final GlobalKey _saveKey = GlobalKey();
   final _formKey = GlobalKey<FormState>();
   bool get _isEditing => widget.eventDoc != null;
 
@@ -57,6 +62,20 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
         _selectedDateTime = DateTime.now();
       });
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Small delay to ensure UI is ready
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          // Ensure you import '../services/tutorial_service.dart'
+          TutorialService.showEventEditorTutorial(
+            context: context,
+            timeKey: _timeKey,
+            locationKey: _locationKey,
+            saveKey: _saveKey,
+          );
+        }
+      });
+    });
   }
 
   Future<void> _selectPoi() async {
@@ -259,6 +278,7 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
             const SizedBox(height: 16),
             // Date and Time
             ListTile(
+              key: _timeKey, // 👈 Assign Key
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),
                 side: BorderSide(color: Colors.grey.shade400),
@@ -275,6 +295,7 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
             const SizedBox(height: 16),
             // Destination
             ListTile(
+              key: _locationKey, // 👈 Assign Key
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),
                 side: BorderSide(color: Colors.grey.shade400),
@@ -300,6 +321,7 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
             const SizedBox(height: 24),
             // Save Button
             ElevatedButton(
+              key: _saveKey, // 👈 Assign Key
               onPressed: _isLoading ? null : _saveEvent,
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),

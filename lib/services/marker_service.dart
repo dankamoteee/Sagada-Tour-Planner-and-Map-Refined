@@ -41,7 +41,6 @@ class MarkerService {
     required List<Map<String, dynamic>> poiList,
     required double zoomLevel,
     required Function(Map<String, dynamic>) onTap,
-    // ⭐️ ADD THIS PARAMETER ⭐️
     String? highlightedId,
   }) async {
     final Set<Marker> markers = {};
@@ -50,30 +49,41 @@ class MarkerService {
     final bool defaultShowLabels = zoomLevel >= 17.5;
 
     for (final data in poiList) {
+      // ⭐️ 1. DETERMINE HIGHLIGHT STATUS FIRST ⭐️
+      final bool isHighlighted = highlightedId == data['id'];
+
       bool useDot = false;
-      bool showLabel = defaultShowLabels; // Start with default
-      double scale = 1.0; // Default size
+      bool showLabel = defaultShowLabels;
+      double scale = 1.0;
 
       final String type = data['type'] ?? '';
 
-      // ⭐️ SPECIAL LOGIC FOR TOURIST SPOTS ⭐️
+      // 2. STANDARD LOGIC (Your existing rules)
       if (type == 'Tourist Spots') {
         useDot = false;
-        showLabel = true; // ⭐️ ALWAYS show label
-        scale = 1.3; // ⭐️ Make it 30% larger
+        showLabel = true;
+        scale = 1.3;
       } else if (type == 'Accommodations' || type.contains('Transport')) {
         useDot = zoomLevel < 15.0;
       } else {
         useDot = zoomLevel < 17.0;
       }
 
+      // ⭐️ 3. HIGHLIGHT OVERRIDE (The Fix) ⭐️
+      // If this marker is clicked, we FORCE it to be fully visible and large.
+      if (isHighlighted) {
+        useDot = false; // Never show a dot if selected
+        showLabel = true; // Always show the name
+        scale = 1.3; // Boost base scale to match Tourist Spots
+      }
+
       final marker = await _createSingleMarker(
         data: data,
         showLabel: showLabel,
         useDot: useDot,
-        scale: scale, // Pass the scale
+        scale: scale,
         onTap: onTap,
-        isHighlighted: highlightedId == data['id'], // ⭐️ Pass the check
+        isHighlighted: isHighlighted,
       );
       if (marker != null) {
         markers.add(marker);

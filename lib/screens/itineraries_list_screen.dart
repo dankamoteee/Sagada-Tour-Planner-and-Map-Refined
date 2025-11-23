@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import '../services/tutorial_service.dart';
 import 'itinerary_detail_screen.dart';
 
 class ItinerariesListScreen extends StatefulWidget {
@@ -15,12 +16,25 @@ class ItinerariesListScreen extends StatefulWidget {
 }
 
 class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
+  final GlobalKey _fabKey = GlobalKey();
   String? _activeItineraryId;
 
   @override
   void initState() {
     super.initState();
     _loadActiveItinerary();
+    // 🆕 ADD THIS BLOCK
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          // Ensure TutorialService is imported
+          TutorialService.showListTutorial(
+            context: context,
+            createKey: _fabKey,
+          );
+        }
+      });
+    });
   }
 
   Future<void> _loadActiveItinerary() async {
@@ -220,6 +234,7 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
+        key: _fabKey, // 👈 ASSIGN KEY HERE
         onPressed: () {
           _createNewItinerary(context, user.uid);
         },
