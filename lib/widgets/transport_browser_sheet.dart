@@ -68,7 +68,6 @@ class _TransportBrowserSheetState extends State<TransportBrowserSheet> {
 
     return Column(
       children: [
-        // Back button
         ListTile(
           leading: const Icon(Icons.arrow_back),
           title: Text(
@@ -86,26 +85,64 @@ class _TransportBrowserSheetState extends State<TransportBrowserSheet> {
               final polyline = route['polyline'] as String?;
               final canShowOnMap = polyline != null && polyline.isNotEmpty;
 
+              // ⭐️ PREPARE TERMINAL INFO ⭐️
+              final String start = route['originTerminal'] ?? 'Origin';
+              final String end = route['destinationTerminal'] ?? 'Destination';
+              // Fallback if specific fields aren't set yet
+              final String generalTerminal = route['terminal'] ?? '';
+
               return ListTile(
                 leading: const Icon(Icons.route_outlined),
                 title: Text(route['routeName'] ?? 'Unnamed Route'),
-                subtitle: Text(route['fareDetails'] ?? ''),
+                // ⭐️ UPDATED SUBTITLE ⭐️
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (route['fareDetails'] != null)
+                      Text(route['fareDetails'] ?? ''),
+                    const SizedBox(height: 6),
+
+                    // Show specific start/end if available
+                    if (route.containsKey('originTerminal') ||
+                        route.containsKey('destinationTerminal')) ...[
+                      Row(children: [
+                        const Icon(Icons.circle, size: 8, color: Colors.green),
+                        const SizedBox(width: 4),
+                        Expanded(
+                            child: Text("From: $start",
+                                style: const TextStyle(fontSize: 12))),
+                      ]),
+                      const SizedBox(height: 2),
+                      Row(children: [
+                        const Icon(Icons.circle, size: 8, color: Colors.red),
+                        const SizedBox(width: 4),
+                        Expanded(
+                            child: Text("To: $end",
+                                style: const TextStyle(fontSize: 12))),
+                      ]),
+                    ]
+                    // Otherwise show generic terminal info
+                    else if (generalTerminal.isNotEmpty) ...[
+                      Row(children: [
+                        const Icon(Icons.info_outline,
+                            size: 12, color: Colors.grey),
+                        const SizedBox(width: 4),
+                        Expanded(
+                            child: Text("Terminal: $generalTerminal",
+                                style: const TextStyle(fontSize: 12))),
+                      ]),
+                    ]
+                  ],
+                ),
+                isThreeLine: true,
                 trailing: canShowOnMap ? const Icon(Icons.map_outlined) : null,
                 onTap: () {
-                  // Check if the route has a polyline before trying to show it
-                  final polyline = route['polyline'] as String?;
-                  final canShowOnMap = polyline != null && polyline.isNotEmpty;
-
                   if (canShowOnMap) {
-                    // 👈 CHANGE THIS LINE: Return the entire 'route' map
                     Navigator.pop(context, route);
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text(
-                          'This transport type does not have a fixed route to display.',
-                        ),
-                      ),
+                          content: Text('This route has no map data.')),
                     );
                   }
                 },
@@ -135,10 +172,9 @@ class _TransportBrowserSheetState extends State<TransportBrowserSheet> {
           Expanded(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
-              child:
-                  _selectedType == null
-                      ? _buildTypesList()
-                      : _buildRoutesList(),
+              child: _selectedType == null
+                  ? _buildTypesList()
+                  : _buildRoutesList(),
             ),
           ),
         ],

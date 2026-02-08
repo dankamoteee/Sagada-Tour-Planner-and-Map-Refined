@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+// Note: shared_preferences import removed as Provider handles storage now
 import 'package:timeago/timeago.dart' as timeago;
 import '../services/tutorial_service.dart';
 import 'itinerary_detail_screen.dart';
+import 'package:provider/provider.dart';
+import '../providers/itinerary_provider.dart';
 
 class ItinerariesListScreen extends StatefulWidget {
   const ItinerariesListScreen({super.key});
@@ -17,17 +19,17 @@ class ItinerariesListScreen extends StatefulWidget {
 
 class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
   final GlobalKey _fabKey = GlobalKey();
-  String? _activeItineraryId;
+  // 🗑️ REMOVED: String? _activeItineraryId; (Provider holds this now)
 
   @override
   void initState() {
     super.initState();
-    _loadActiveItinerary();
-    // 🆕 ADD THIS BLOCK
+    // 🗑️ REMOVED: _loadActiveItinerary(); (Provider loads it in main.dart)
+
+    // Tutorial Logic
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) {
-          // Ensure TutorialService is imported
           TutorialService.showListTutorial(
             context: context,
             createKey: _fabKey,
@@ -37,21 +39,11 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
     });
   }
 
-  Future<void> _loadActiveItinerary() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _activeItineraryId = prefs.getString('activeItineraryId');
-    });
-  }
-
-  Future<void> _setActiveItinerary(
-      String itineraryId, String itineraryName) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('activeItineraryId', itineraryId);
-    await prefs.setString('activeItineraryName', itineraryName);
-    setState(() {
-      _activeItineraryId = itineraryId;
-    });
+  // ⭐️ UPDATED: Uses Provider instead of SharedPreferences/setState
+  void _setActiveItinerary(String itineraryId, String itineraryName) {
+    context
+        .read<ItineraryProvider>()
+        .setActiveItinerary(itineraryId, itineraryName);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -107,7 +99,8 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
       });
 
       if (context.mounted) {
-        await _setActiveItinerary(newItineraryRef.id, newName);
+        // ⭐️ Uses the updated method that calls Provider
+        _setActiveItinerary(newItineraryRef.id, newName);
 
         Navigator.of(context).push(
           MaterialPageRoute(
@@ -125,6 +118,10 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final Color themeColor = Theme.of(context).primaryColor;
+
+    // ⭐️ READ FROM PROVIDER (Listens for changes automatically)
+    final activeItineraryId =
+        context.watch<ItineraryProvider>().activeItineraryId;
 
     if (user == null) {
       return Scaffold(
@@ -186,29 +183,29 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
           // --- 1. Upcoming Plans ---
           _ItineraryListSection(
             title: 'Upcoming Plans',
-            icon: Icons.explore_outlined, // ⭐️ ADDED ICON
+            icon: Icons.explore_outlined,
             query: FirebaseFirestore.instance
                 .collection('users')
                 .doc(user.uid)
                 .collection('itineraries')
                 .where('lastEventDate', isGreaterThanOrEqualTo: Timestamp.now())
                 .orderBy('lastEventDate', descending: false),
-            activeItineraryId: _activeItineraryId,
-            onSetActive: _setActiveItinerary,
+            activeItineraryId: activeItineraryId, // ⭐️ Uses provider value
+            onSetActive: _setActiveItinerary, // ⭐️ Uses helper method
             emptyMessage: "No upcoming trips. Plan one!",
           ),
 
           // --- 2. Past Journals ---
           _ItineraryListSection(
             title: 'Past Journals',
-            icon: Icons.history_edu_outlined, // ⭐️ ADDED ICON
+            icon: Icons.history_edu_outlined,
             query: FirebaseFirestore.instance
                 .collection('users')
                 .doc(user.uid)
                 .collection('itineraries')
                 .where('lastEventDate', isLessThan: Timestamp.now())
                 .orderBy('lastEventDate', descending: true),
-            activeItineraryId: _activeItineraryId,
+            activeItineraryId: activeItineraryId, // ⭐️ Uses provider value
             onSetActive: _setActiveItinerary,
             emptyMessage: "No past trips found.",
           ),
@@ -216,14 +213,14 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
           // --- 3. Empty/New Plans ---
           _ItineraryListSection(
             title: 'Empty Plans',
-            icon: Icons.add_circle_outline_rounded, // ⭐️ ADDED ICON
+            icon: Icons.add_circle_outline_rounded,
             query: FirebaseFirestore.instance
                 .collection('users')
                 .doc(user.uid)
                 .collection('itineraries')
                 .where('totalEvents', isEqualTo: 0)
                 .orderBy('lastModified', descending: true),
-            activeItineraryId: _activeItineraryId,
+            activeItineraryId: activeItineraryId, // ⭐️ Uses provider value
             onSetActive: _setActiveItinerary,
             emptyMessage: "Tap '+' to create your first plan.",
           ),
@@ -234,7 +231,7 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        key: _fabKey, // 👈 ASSIGN KEY HERE
+        key: _fabKey,
         onPressed: () {
           _createNewItinerary(context, user.uid);
         },
@@ -245,11 +242,10 @@ class _ItinerariesListScreenState extends State<ItinerariesListScreen> {
   }
 }
 
-// ⭐️ --- MODIFIED WIDGET --- ⭐️
-/// A reusable widget to display a list of itineraries from a query.
+// ⭐️ --- REUSABLE WIDGET (Unchanged but verified) --- ⭐️
 class _ItineraryListSection extends StatelessWidget {
   final String title;
-  final IconData icon; // ⭐️ ADDED THIS
+  final IconData icon;
   final Query query;
   final String? activeItineraryId;
   final Function(String, String) onSetActive;
@@ -257,7 +253,7 @@ class _ItineraryListSection extends StatelessWidget {
 
   const _ItineraryListSection({
     required this.title,
-    required this.icon, // ⭐️ ADDED THIS
+    required this.icon,
     required this.query,
     required this.activeItineraryId,
     required this.onSetActive,
@@ -271,14 +267,9 @@ class _ItineraryListSection extends StatelessWidget {
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16.0, 24.0, 16.0, 8.0),
-            // ⭐️ --- START OF HEADER CHANGE --- ⭐️
             child: Row(
               children: [
-                Icon(
-                  icon,
-                  color: Colors.grey.shade700,
-                  size: 20,
-                ),
+                Icon(icon, color: Colors.grey.shade700, size: 20),
                 const SizedBox(width: 8),
                 Text(
                   title,
@@ -289,7 +280,6 @@ class _ItineraryListSection extends StatelessWidget {
                 ),
               ],
             ),
-            // ⭐️ --- END OF HEADER CHANGE --- ⭐️
           ),
         ),
         SliverPadding(
@@ -329,6 +319,7 @@ class _ItineraryListSection extends StatelessWidget {
                     final bool isActive = doc.id == activeItineraryId;
 
                     return _ItineraryListCard(
+                      itineraryDoc: doc, // ⭐️ Passing Doc for Pending Check
                       itineraryData: data,
                       itineraryId: doc.id,
                       isActive: isActive,
@@ -350,8 +341,7 @@ class _ItineraryListSection extends StatelessWidget {
   }
 }
 
-// ... (_UpcomingEventCard is perfect as-is) ...
-
+// ... _UpcomingEventCard (Same as before) ...
 class _UpcomingEventCard extends StatelessWidget {
   final String userId;
   const _UpcomingEventCard({required this.userId});
@@ -410,7 +400,6 @@ class _UpcomingEventCard extends StatelessWidget {
                 color: Colors.white,
                 size: 30,
               ),
-              // ⭐️ MODIFIED TITLE ⭐️
               title: Text(
                 'Up Next: $eventName',
                 style: const TextStyle(
@@ -419,9 +408,7 @@ class _UpcomingEventCard extends StatelessWidget {
                   fontSize: 18,
                 ),
               ),
-              // ⭐️ MODIFIED SUBTITLE ⭐️
               subtitle: Text(
-                // Show the itinerary name if it exists
                 (itineraryName != null ? 'From: $itineraryName • ' : '') +
                     'Today at ${DateFormat.jm().format(eventTime)} (${timeago.format(eventTime)})',
                 style: const TextStyle(color: Colors.white70),
@@ -434,8 +421,9 @@ class _UpcomingEventCard extends StatelessWidget {
   }
 }
 
-// ⭐️ --- MODIFIED WIDGET --- ⭐️
+// ⭐️ --- CORRECTED CARD WIDGET --- ⭐️
 class _ItineraryListCard extends StatelessWidget {
+  final DocumentSnapshot itineraryDoc;
   final Map<String, dynamic> itineraryData;
   final String itineraryId;
   final bool isActive;
@@ -443,6 +431,7 @@ class _ItineraryListCard extends StatelessWidget {
   final String sectionTitle;
 
   const _ItineraryListCard({
+    required this.itineraryDoc,
     required this.itineraryData,
     required this.itineraryId,
     required this.isActive,
@@ -453,14 +442,14 @@ class _ItineraryListCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final modified = (itineraryData['lastModified'] as Timestamp?)?.toDate();
-
-    // ⭐️ --- NEW LOGIC HERE --- ⭐️
     final bool canBeSetConfig = (sectionTitle != 'Past Journals');
+
+    // ⭐️ PENDING SYNC CHECK
+    final bool isUnsynced = itineraryDoc.metadata.hasPendingWrites;
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 6),
       color: isActive ? Theme.of(context).primaryColor.withOpacity(0.1) : null,
-      // ⭐️ Add a visual indicator on the side
       shape: RoundedRectangleBorder(
         side: BorderSide(
           color: isActive ? Theme.of(context).primaryColor : Colors.transparent,
@@ -469,14 +458,43 @@ class _ItineraryListCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: ListTile(
-        title: Text(
-          itineraryData['name'] ?? 'My Itinerary',
-          style: const TextStyle(fontWeight: FontWeight.bold),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                itineraryData['name'] ?? 'My Itinerary',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            // ⭐️ VISUAL INDICATOR
+            if (isUnsynced)
+              Tooltip(
+                message: "Waiting for internet to sync...",
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 8.0),
+                  child: Icon(Icons.cloud_upload_outlined,
+                      size: 18, color: Colors.orange.shade700),
+                ),
+              )
+          ],
         ),
-        subtitle: Text(
-          'Last updated: ${modified != null ? timeago.format(modified) : 'N/A'}',
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Last updated: ${modified != null ? DateFormat.yMMMd().add_jm().format(modified) : 'N/A'}',
+            ),
+            // ⭐️ TEXT WARNING
+            if (isUnsynced)
+              Text(
+                "• Saved to device. Syncing...",
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange.shade800),
+              ),
+          ],
         ),
-        // ⭐️ --- REPLACED Trailing Widget --- ⭐️
         trailing: isActive
             ? Chip(
                 label: const Text(
@@ -530,22 +548,15 @@ class _ItineraryListCard extends StatelessWidget {
       ),
     );
 
-    // ⭐️ --- START OF MODIFICATION --- ⭐️
-    // Check for our new Map first
     if (result is Map<String, dynamic>) {
-      if (context.mounted) {
-        Navigator.pop(context, result); // Pass the map back to ProfileMenu
-      }
-    }
-    // This check for List<GeoPoint> is from an old implementation,
-    // we can remove it or just leave it, but the new one is what matters.
-    else if (result is List<GeoPoint>) {
       if (context.mounted) {
         Navigator.pop(context, result);
       }
-    }
-    // ⭐️ --- END OF MODIFICATION --- ⭐️
-    else if (result is String && context.mounted) {
+    } else if (result is List<GeoPoint>) {
+      if (context.mounted) {
+        Navigator.pop(context, result);
+      }
+    } else if (result is String && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result), backgroundColor: Colors.red),
       );

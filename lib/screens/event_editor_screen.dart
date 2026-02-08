@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import '../services/poi_search_delegate.dart';
 import '../services/tutorial_service.dart'; // Ensure this path is correct
+import '../services/notification_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class EventEditorScreen extends StatefulWidget {
   final String itineraryId;
@@ -116,16 +118,13 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     }
   }
 
-  // --- ⭐️ MODIFIED _saveEvent FUNCTION ⭐️ ---
   Future<void> _saveEvent() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedDestination == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a destination.')),
-      );
+          const SnackBar(content: Text('Please select a destination.')));
       return;
     }
-    // ⭐️ Use a default time if none is selected
     _selectedDateTime ??= DateTime.now();
 
     setState(() => _isLoading = true);
@@ -133,18 +132,18 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // Create the event data map
+    // Check connectivity
+    final connectivityResult = await Connectivity().checkConnectivity();
+    final bool isOffline = connectivityResult.contains(ConnectivityResult.none);
+
     final Map<String, dynamic> eventData = {
-      'eventTime': Timestamp.fromDate(
-          _selectedDateTime!), // Now guaranteed to be non-null
+      'eventTime': Timestamp.fromDate(_selectedDateTime!),
       'destinationPoiId': _selectedDestination!['id'],
       'destinationPoiName': _selectedDestination!['name'],
       'notes': _notesController.text,
       'userId': user.uid,
-      // ⭐️ --- ADD THESE TWO LINES --- ⭐️
       'itineraryId': widget.itineraryId,
       'itineraryName': widget.itineraryName,
-      // ⭐️ --- END OF ADDITION --- ⭐️
     };
 
     final itineraryRef = FirebaseFirestore.instance
@@ -153,63 +152,77 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
         .collection('itineraries')
         .doc(widget.itineraryId);
 
+    bool saveSuccessful = false; // Track success
+
     try {
       final batch = FirebaseFirestore.instance.batch();
 
-      // 1. Save the event (create or update)
+      final DocumentReference eventRef = _isEditing
+          ? itineraryRef.collection('events').doc(widget.eventDoc!.id)
+          : itineraryRef.collection('events').doc();
+
       if (_isEditing) {
-        final eventRef =
-            itineraryRef.collection('events').doc(widget.eventDoc!.id);
         batch.update(eventRef, eventData);
       } else {
-        final newEventRef = itineraryRef.collection('events').doc();
         eventData['order'] = DateTime.now().millisecondsSinceEpoch;
-        batch.set(newEventRef, eventData);
-        // ⭐️ Increment totalEvents only when creating a new one
+        batch.set(eventRef, eventData);
         batch.set(itineraryRef, {'totalEvents': FieldValue.increment(1)},
             SetOptions(merge: true));
       }
 
-      // 2. Always update lastModified time
-      batch.set(
-          itineraryRef,
-          {
-            'lastModified': FieldValue.serverTimestamp(),
-          },
+      batch.set(itineraryRef, {'lastModified': FieldValue.serverTimestamp()},
           SetOptions(merge: true));
 
-      // 3. Commit batch
+      // 1. Commit (Works offline)
       await batch.commit();
+      saveSuccessful = true; // Mark as saved locally
 
-      // ⭐️ --- START OF NEW LOGIC --- ⭐️
-      // 4. After commit, check and update the parent's lastEventDate
-      // This is done *after* the batch because it requires a read.
-      final eventTime = eventData['eventTime'] as Timestamp;
-      final itineraryDoc = await itineraryRef.get();
-      final currentLastEvent =
-          itineraryDoc.data()?['lastEventDate'] as Timestamp?;
-
-      if (currentLastEvent == null ||
-          eventTime.compareTo(currentLastEvent) > 0) {
-        // This new/edited event is now the latest one
-        await itineraryRef.update({'lastEventDate': eventTime});
+      // 2. Try Online Update (Fail silently if offline)
+      if (!isOffline) {
+        try {
+          final eventTime = eventData['eventTime'] as Timestamp;
+          final itineraryDoc = await itineraryRef.get();
+          final currentLastEvent =
+              itineraryDoc.data()?['lastEventDate'] as Timestamp?;
+          if (currentLastEvent == null ||
+              eventTime.compareTo(currentLastEvent) > 0) {
+            await itineraryRef.update({'lastEventDate': eventTime});
+          }
+        } catch (e) {
+          print("Online metadata update skipped: $e");
+        }
       }
-      // ⭐️ --- END OF NEW LOGIC --- ⭐️
 
-      if (mounted) {
-        final successMessage = _isEditing
-            ? "Updated '${eventData['destinationPoiName']}'"
-            : "Added '${eventData['destinationPoiName']}' to your plan!";
-        Navigator.pop(context, successMessage);
+      // 3. Try Notifications (Fail silently if error)
+      try {
+        if (_selectedDateTime != null) {
+          NotificationService().scheduleEventNotification(
+            id: eventRef.id.hashCode,
+            title: _selectedDestination!['name'],
+            body:
+                "Your trip to ${_selectedDestination!['name']} is starting soon.",
+            scheduledTime: _selectedDateTime!,
+          );
+        }
+      } catch (e) {
+        print("Notification scheduling failed: $e");
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save event: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error saving: $e')));
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        // ⭐️ FORCE CLOSE IF SUCCESSFUL
+        if (saveSuccessful) {
+          final successMessage = _isEditing
+              ? "Updated '${eventData['destinationPoiName']}'"
+              : "Added '${eventData['destinationPoiName']}'";
+          Navigator.pop(context, successMessage);
+        }
+      }
     }
   }
 

@@ -8,6 +8,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart'; // For kReleaseMode
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/services.dart';
+import 'services/notification_service.dart'; // 👈 Import
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/login_screen.dart';
 import 'screens/terms_screen.dart';
@@ -15,6 +17,8 @@ import 'screens/register_screen.dart';
 import 'screens/splash_screen.dart';
 import 'auth_wrapper.dart';
 import 'screens/map_homescreen.dart';
+import 'package:provider/provider.dart';
+import 'providers/itinerary_provider.dart';
 
 // Helper function to create a MaterialColor
 MaterialColor createMaterialColor(Color color) {
@@ -72,15 +76,95 @@ void main() async {
     DeviceOrientation.portraitDown,
   ]);
 
-  runApp(const SagadaTourPlannerApp());
+  // ⭐️ 1. Initialize Notification Service
+  await NotificationService().init();
+
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(
+            create: (_) => ItineraryProvider()..loadActiveItinerary()),
+        // You can add other providers here later (e.g. AuthProvider)
+      ],
+      child: const SagadaTourPlannerApp(),
+    ),
+  );
 }
 
-class SagadaTourPlannerApp extends StatelessWidget {
+class SagadaTourPlannerApp extends StatefulWidget {
   const SagadaTourPlannerApp({super.key});
+
+  @override
+  State<SagadaTourPlannerApp> createState() => _SagadaTourPlannerAppState();
+}
+
+class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
+  @override
+  void initState() {
+    super.initState();
+    // ⭐️ 2. Start Listening for Updates
+    _listenForUpdates();
+  }
+
+  void _listenForUpdates() {
+    // Listen for NEW News
+    FirebaseFirestore.instance
+        .collection('news')
+        .orderBy('postedAt', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) async {
+      if (snapshot.docs.isNotEmpty) {
+        final doc = snapshot.docs.first;
+        final data = doc.data();
+        final Timestamp postedAt = data['postedAt'];
+
+        // Check if this is actually new (compare with stored timestamp)
+        final prefs = await SharedPreferences.getInstance();
+        final lastSeen = prefs.getInt('last_news_timestamp') ?? 0;
+
+        if (postedAt.millisecondsSinceEpoch > lastSeen) {
+          // It's new! Show notification
+          NotificationService().showNotification(
+            id: doc.id.hashCode,
+            title: "News Update: ${data['title']}",
+            body: data['body'] ?? "Check the app for the latest news.",
+          );
+          // Update local storage
+          await prefs.setInt(
+              'last_news_timestamp', postedAt.millisecondsSinceEpoch);
+        }
+      }
+    });
+
+    // Listen for NEW Road Closures
+    FirebaseFirestore.instance
+        .collection('roadClosures')
+        .snapshots()
+        .listen((snapshot) async {
+      // Simple check: if the count increases, something was added.
+      // For a more robust check, you can add a 'createdAt' field to closures.
+      // Here is a basic implementation assuming you just want to alert on change:
+      for (var change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.added) {
+          final data = change.doc.data() as Map<String, dynamic>;
+          // Only notify if it looks like a real alert
+          NotificationService().showNotification(
+            id: change.doc.id.hashCode,
+            title: "Road Closure Alert",
+            body:
+                "New advisory for ${data['location'] ?? 'Sagada'}. Check map for details.",
+          );
+        }
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      // ... existing MaterialApp code ...
+      // Just wrap your existing MaterialApp here or copy the contents of your old build method
       title: 'Sagada Tour Planner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

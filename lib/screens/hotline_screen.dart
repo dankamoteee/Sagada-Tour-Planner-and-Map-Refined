@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 
 class HotlineScreen extends StatefulWidget {
   const HotlineScreen({super.key});
@@ -39,10 +40,98 @@ class _HotlineScreenState extends State<HotlineScreen> {
     }
   }
 
+  Future<void> _saveAllContacts(List<DocumentSnapshot> docs) async {
+    // 1. Request Permission
+    if (await FlutterContacts.requestPermission()) {
+      int count = 0;
+      bool confirm = await showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text("Save All Hotlines?"),
+              content: Text(
+                  "This will save ${docs.length} numbers to your contacts."),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text("Cancel")),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text("Save")),
+              ],
+            ),
+          ) ??
+          false;
+
+      if (!confirm) return;
+
+      // 2. Iterate and Save
+      for (var doc in docs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        // Handle different data structures safely
+        final Map<String, dynamic> contacts = data['contacts'] is Map
+            ? data['contacts'] as Map<String, dynamic>
+            : {};
+
+        final String name = data['agencyName'] as String? ?? 'Sagada Hotline';
+        final String? phone = contacts['contactNumber']?.toString();
+
+        if (phone != null && phone.isNotEmpty) {
+          // Check if contact already exists to avoid duplicates (optional but good)
+          // For simplicity in a capstone, we just insert.
+
+          final newContact = Contact()
+            ..name.first = name
+            ..phones = [Phone(phone)];
+
+          try {
+            await newContact.insert();
+            count++;
+          } catch (e) {
+            print("Error saving $name: $e");
+          }
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Successfully saved $count contacts!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Permission denied. Cannot save contacts.')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // ⭐️ SliverAppBar for a nice collapsing header effect
+      // ⭐️ PROBLEM 5 FIX: Add Floating Action Button
+      floatingActionButton: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance.collection('Hotline').snapshots(),
+        builder: (context, snapshot) {
+          // Only show button if we have data
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const SizedBox.shrink();
+          }
+
+          return FloatingActionButton.extended(
+            onPressed: () => _saveAllContacts(snapshot.data!.docs),
+            label: const Text("Save All"),
+            icon: const Icon(Icons.save_alt),
+            backgroundColor: const Color(0xFF3A6A55),
+            foregroundColor: Colors.white,
+          );
+        },
+      ),
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -60,7 +149,7 @@ class _HotlineScreenState extends State<HotlineScreen> {
                 fit: StackFit.expand,
                 children: [
                   Image.asset(
-                    'assets/images/hotline_background.jpg', // Ensure this asset exists
+                    'assets/images/hotline_background.jpg',
                     fit: BoxFit.cover,
                   ),
                   Container(
@@ -80,7 +169,6 @@ class _HotlineScreenState extends State<HotlineScreen> {
             ),
           ),
 
-          // Search Bar
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(16.0),

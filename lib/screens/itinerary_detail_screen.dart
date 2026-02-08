@@ -334,12 +334,14 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
     final notes = event['notes'] as String?;
     final poiId = event['destinationPoiId'] as String?;
 
+    // ⭐️ PROBLEM 3 FIX: Check for unsynced changes
+    final bool isPending = eventDoc.metadata.hasPendingWrites;
+
     // --- Journal Logic ---
     final bool hasJournal = event['hasJournalEntry'] ?? false;
     final bool isPast =
         eventTime.isBefore(DateTime.now().subtract(const Duration(hours: 1)));
 
-    // ⭐️ --- START OF REVAMPED UI WIDGET --- ⭐️
     Widget? journalWidget;
     if (isPast) {
       journalWidget = Padding(
@@ -360,7 +362,6 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
         ),
       );
     }
-    // ⭐️ --- END OF REVAMPED UI WIDGET --- ⭐️
 
     Widget? highlightIcon;
     Color cardColor = Colors.white;
@@ -379,9 +380,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
 
     // --- Case 1: Custom Event ---
     if (poiId == null) {
-      // ... (This part remains unchanged) ...
       return Dismissible(
-        // ... existing custom event code ...
         key: ValueKey(eventDoc.id),
         direction: DismissDirection.endToStart,
         onDismissed: (_) => _deleteEvent(eventDoc.id),
@@ -417,6 +416,22 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
                     overflow: TextOverflow.ellipsis,
                   ),
                 if (journalWidget != null) journalWidget,
+
+                // ⭐️ VISUAL INDICATOR FOR PENDING SYNC
+                if (isPending)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_upload_outlined,
+                            size: 14, color: Colors.orange),
+                        const SizedBox(width: 4),
+                        Text("Syncing...",
+                            style:
+                                TextStyle(fontSize: 12, color: Colors.orange)),
+                      ],
+                    ),
+                  ),
               ],
             ),
             trailing: highlightIcon,
@@ -426,7 +441,7 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
       );
     }
 
-    // --- Case 2: POI Event (UPDATED) ---
+    // --- Case 2: POI Event ---
     return Dismissible(
       key: ValueKey(eventDoc.id),
       direction: DismissDirection.endToStart,
@@ -435,7 +450,6 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
       child: FutureBuilder<DocumentSnapshot>(
         future: FirebaseFirestore.instance.collection('POIs').doc(poiId).get(),
         builder: (context, poiSnapshot) {
-          // ⭐️ FIX 1: Check if data exists safely ⭐️
           bool exists = poiSnapshot.hasData &&
               poiSnapshot.data != null &&
               poiSnapshot.data!.exists;
@@ -447,7 +461,6 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
             poiData = poiSnapshot.data!.data() as Map<String, dynamic>;
             poiName = poiData['name'] ?? 'Unnamed';
           } else if (poiSnapshot.connectionState == ConnectionState.done) {
-            // If done loading but !exists, it means it was deleted
             poiName = 'Unknown Place (Deleted)';
           }
 
@@ -457,13 +470,11 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
             clipBehavior: Clip.antiAlias,
             child: ListTile(
               contentPadding: const EdgeInsets.all(10),
-              // We pass the snapshot to _buildPoiImage; it handles nulls internally, but let's be safe
               leading: _buildPoiImage(poiSnapshot),
               title: Text(
-                poiName, // ⭐️ Uses the safe variable
+                poiName,
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  // Grey out text if deleted
                   color: exists ? Colors.black : Colors.grey,
                   fontStyle: exists ? FontStyle.normal : FontStyle.italic,
                 ),
@@ -488,10 +499,25 @@ class _ItineraryDetailScreenState extends State<ItineraryDetailScreen>
                     ),
                   ],
                   if (journalWidget != null) journalWidget,
+
+                  // ⭐️ VISUAL INDICATOR FOR PENDING SYNC (POI CASE)
+                  if (isPending)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Row(
+                        children: [
+                          Icon(Icons.cloud_upload_outlined,
+                              size: 14, color: Colors.orange),
+                          const SizedBox(width: 4),
+                          Text("Syncing...",
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.orange)),
+                        ],
+                      ),
+                    ),
                 ],
               ),
               trailing: highlightIcon,
-              // ⭐️ FIX 2: Disable tap if deleted ⭐️
               onTap: exists
                   ? () => _navigateToEditor(
                         eventDoc: eventDoc,

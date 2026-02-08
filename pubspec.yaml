@@ -61,6 +61,7 @@ dependencies:
   flutter_tts: ^4.2.3 # For text-to-speech
   html_unescape: ^2.0.0
   google_maps_utils: ^2.0.0+1
+  flutter_local_notifications: ^17.0.0
 
   # UTILITY
   cached_network_image: ^3.3.1
@@ -72,6 +73,7 @@ dependencies:
   flutter_dotenv: ^6.0.0
   tutorial_coach_mark: ^1.2.9 # Add this line
   connectivity_plus: ^6.0.3  # For Offline Mode
+  timezone: ^0.9.2
 
 dev_dependencies:
   flutter_test:

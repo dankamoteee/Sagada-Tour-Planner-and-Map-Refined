@@ -43,6 +43,8 @@ import '../widgets/responsible_tourism_dialog.dart';
 import '../widgets/enable_location_dialog.dart';
 import '../widgets/guide_card.dart';
 import 'package:flutter/foundation.dart';
+import 'package:provider/provider.dart';
+import '../providers/itinerary_provider.dart';
 
 enum LocationButtonState {
   centered,
@@ -1389,7 +1391,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _loadActiveItineraryStream();
+    // 🗑️ REMOVE THIS LINE: _loadActiveItineraryStream();
+
     WidgetsBinding.instance.addObserver(this);
     _flutterTts = FlutterTts();
 
@@ -1414,17 +1417,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _listenToClosures();
     });
 
-    // ⭐️ --- ADD THIS TIMER --- ⭐️
-    // This will periodically re-check the itinerary stream
+    // ⭐️ FIX: Update the Timer to use current state variables
     _headsUpTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
       if (mounted) {
-        // This will force the stream to re-query Firestore with a new Timestamp.now()
-        _loadActiveItineraryStream(forceReload: true);
+        // Pass the CURRENT state variables to refresh the stream
+        _loadActiveItineraryStream(_activeItineraryId, _activeItineraryName);
       }
     });
-    // ⭐️ --- END OF ADDITION --- ⭐️
 
-    // ⭐️ 1. Listen for Internet Connection changes
     _checkConnectivity();
 
     // ⭐️ 2. Schedule Feature Discovery (Coach Marks)
@@ -1445,7 +1445,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _loadActiveItineraryStream();
+
+    // ⭐️ FIX: Watch the provider and pass values to the function
+    final provider = context.watch<ItineraryProvider>();
+
+    // Only reload if the ID actually changed to prevent loops
+    if (provider.activeItineraryId != _activeItineraryId) {
+      _loadActiveItineraryStream(
+          provider.activeItineraryId, provider.activeItineraryName);
+    }
   }
 
   // New function to fetch user data
@@ -1546,12 +1554,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
-    // This checks if the user has returned to the app
     if (state == AppLifecycleState.resumed) {
       print("App resumed: Checking for new active itinerary...");
-      // ⭐️ --- MODIFIED THIS LINE --- ⭐️
-      // Force a re-check of SharedPreferences
-      _loadActiveItineraryStream(forceReload: true);
+
+      // ⭐️ FIX: Read from provider and pass arguments
+      if (mounted) {
+        final provider = context.read<ItineraryProvider>();
+        _loadActiveItineraryStream(
+            provider.activeItineraryId, provider.activeItineraryName);
+      }
     }
   }
   // ⭐️ --- END OF NEW FUNCTION --- ⭐️
@@ -2451,17 +2462,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // ⭐️ MODIFIED: Fetch Guide Info when Itinerary Loads ⭐️
-  Future<void> _loadActiveItineraryStream({bool forceReload = false}) async {
-    final prefs = await SharedPreferences.getInstance();
-    final newActiveId = prefs.getString('activeItineraryId');
-    final newActiveName = prefs.getString('activeItineraryName');
+  // ⭐️ Ensure your function signature looks exactly like this:
+  Future<void> _loadActiveItineraryStream(
+      String? newActiveId, String? newActiveName) async {
     final user = FirebaseAuth.instance.currentUser;
 
-    if (!forceReload &&
-        newActiveId == _activeItineraryId &&
-        _activeItineraryStream != null) {
-      return;
-    }
+    // Prevent unnecessary reloads if nothing changed (optional optimization)
+    // if (newActiveId == _activeItineraryId && _activeItineraryStream != null) return;
 
     _activeItineraryStream?.listen(null).cancel();
 
@@ -2471,26 +2478,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _activeItineraryId = newActiveId;
           _activeItineraryName = newActiveName ?? 'My Itinerary';
 
-          // 1. Listen for Events (Existing logic)
-          _activeItineraryStream = FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .collection('itineraries')
-              .doc(_activeItineraryId)
-              .collection('events')
-              .where('eventTime', isGreaterThanOrEqualTo: Timestamp.now())
-              .orderBy('eventTime')
-              .snapshots();
-
+          // ... (Your stream setup logic) ...
           _activeItineraryStream = _userDataService.getActiveItineraryStream(
             userId: user.uid,
             itineraryId: _activeItineraryId!,
           );
-
-          // 👇 ADD THIS LINE BACK:
           _activeItineraryStream?.listen(_updateHeadsUpEvent);
         });
 
+        // Fetch guide
         final guide = await _userDataService.fetchActiveGuide(
             userId: user.uid, itineraryId: newActiveId);
         if (mounted) {
@@ -2500,13 +2496,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         }
       }
     } else {
+      // Handle "No Active Trip" state
       if (mounted) {
         setState(() {
           _activeItineraryId = null;
           _activeItineraryName = null;
           _activeItineraryStream = null;
           _activeHeadsUpEvent = null;
-          _activeTourGuide = null; // Clear guide
+          _activeTourGuide = null;
         });
       }
     }
@@ -2540,8 +2537,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   /// Removes the active itinerary from SharedPreferences and updates the UI.
   Future<void> _clearActiveItinerary() async {
-    await _userDataService.clearActiveItinerary();
-    _loadActiveItineraryStream(); // Refresh state
+    // ⭐️ FIX: Call provider to clear
+    await context.read<ItineraryProvider>().clearActiveItinerary();
+
+    // You don't need to call _loadActiveItineraryStream manually here
+    // because didChangeDependencies will detect the change to 'null' and run automatically!
   }
 
   Future<void> _showEnableLocationDialog() async {
@@ -3209,7 +3209,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             onPressed: () async {
                               // 1. Make it async
                               // 2. Await the result
-                              final result = await showModalBottomSheet(
+                              await showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: true,
                                 backgroundColor: Colors.white,
@@ -3227,29 +3227,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   },
                                 ),
                               );
-
-                              // 3. --- ADD THIS BLOCK ---
-                              // After the profile menu closes, reload the map style
-                              final prefs =
-                                  await SharedPreferences.getInstance();
-                              final styleName =
-                                  prefs.getString('mapStyle') ?? 'tourism.json';
-                              _setMapStyle(styleName);
-                              // --- END OF ADDITION ---
-
-                              // 4. (This is your existing logic for POI clicks)
-                              if (result is Map<String, dynamic>) {
-                                if (result['action'] == 'filter') {
-                                  // Change the filter immediately
-                                  _onFilterChanged(result['filterType']);
-                                } else {
-                                  // Existing POI logic
-                                  _showPoiSheet(
-                                    name: result['name'] ?? 'Unnamed',
-                                    description: result['description'] ?? '',
-                                    data: result,
-                                  );
-                                }
+                              // ⭐️ FIX: Update this call
+                              if (mounted) {
+                                final provider =
+                                    context.read<ItineraryProvider>();
+                                await _loadActiveItineraryStream(
+                                    provider.activeItineraryId,
+                                    provider.activeItineraryName);
                               }
                             },
                           ),
