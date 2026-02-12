@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'services/notification_service.dart'; // 👈 Import
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'models/event_model.dart';
 import 'screens/login_screen.dart';
 import 'screens/terms_screen.dart';
 import 'screens/register_screen.dart';
@@ -99,65 +100,136 @@ class SagadaTourPlannerApp extends StatefulWidget {
 }
 
 class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
+  // Capture the exact time the app started
+  final DateTime _appStartTime = DateTime.now();
+
   @override
   void initState() {
     super.initState();
-    // ⭐️ 2. Start Listening for Updates
     _listenForUpdates();
+    // Schedule reminders for the current active itinerary
+    _scheduleItineraryReminders();
   }
 
   void _listenForUpdates() {
-    // Listen for NEW News
+    // 1. REFINED NEWS LISTENER
     FirebaseFirestore.instance
         .collection('news')
         .orderBy('postedAt', descending: true)
-        .limit(1)
+        .limit(5) // Increase limit to catch multiple updates
         .snapshots()
         .listen((snapshot) async {
-      if (snapshot.docs.isNotEmpty) {
-        final doc = snapshot.docs.first;
-        final data = doc.data();
-        final Timestamp postedAt = data['postedAt'];
+      final prefs = await SharedPreferences.getInstance();
+      // Default to now if first run, so we don't blast old news
+      final lastSeenTime = prefs.getInt('last_news_timestamp') ??
+          DateTime.now().millisecondsSinceEpoch;
+      int maxTimestamp = lastSeenTime;
 
-        // Check if this is actually new (compare with stored timestamp)
-        final prefs = await SharedPreferences.getInstance();
-        final lastSeen = prefs.getInt('last_news_timestamp') ?? 0;
-
-        if (postedAt.millisecondsSinceEpoch > lastSeen) {
-          // It's new! Show notification
-          NotificationService().showNotification(
-            id: doc.id.hashCode,
-            title: "News Update: ${data['title']}",
-            body: data['body'] ?? "Check the app for the latest news.",
-          );
-          // Update local storage
-          await prefs.setInt(
-              'last_news_timestamp', postedAt.millisecondsSinceEpoch);
-        }
-      }
-    });
-
-    // Listen for NEW Road Closures
-    FirebaseFirestore.instance
-        .collection('roadClosures')
-        .snapshots()
-        .listen((snapshot) async {
-      // Simple check: if the count increases, something was added.
-      // For a more robust check, you can add a 'createdAt' field to closures.
-      // Here is a basic implementation assuming you just want to alert on change:
       for (var change in snapshot.docChanges) {
         if (change.type == DocumentChangeType.added) {
           final data = change.doc.data() as Map<String, dynamic>;
-          // Only notify if it looks like a real alert
-          NotificationService().showNotification(
-            id: change.doc.id.hashCode,
-            title: "Road Closure Alert",
-            body:
-                "New advisory for ${data['location'] ?? 'Sagada'}. Check map for details.",
-          );
+          final Timestamp? postedAt =
+              data['postedAt']; // Use nullable to be safe
+
+          if (postedAt != null) {
+            final int msgTime = postedAt.millisecondsSinceEpoch;
+
+            // Only notify if this specific article is newer than what we've seen
+            if (msgTime > lastSeenTime) {
+              NotificationService().showNotification(
+                id: change.doc.id.hashCode,
+                title: "News Update: ${data['title']}",
+                body: data['body'] ?? "Tap to read more.",
+              );
+
+              // Keep track of the newest timestamp found
+              if (msgTime > maxTimestamp) {
+                maxTimestamp = msgTime;
+              }
+            }
+          }
+        }
+      }
+
+      // Update storage with the newest timestamp found
+      await prefs.setInt('last_news_timestamp', maxTimestamp);
+    });
+
+    // 2. REFINED ROAD CLOSURE LISTENER
+    FirebaseFirestore.instance
+        .collection('roadClosures')
+        .snapshots()
+        .listen((snapshot) {
+      for (var change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.added) {
+          final data = change.doc.data() as Map<String, dynamic>;
+
+          // CRITICAL FIX: Check if the document has a timestamp.
+          // If you don't have a 'createdAt' field, you can use a fallback mechanism,
+          // but adding the field is highly recommended.
+          Timestamp? createdAt = data['createdAt'];
+          // Use 'postedAt' or whatever timestamp field you use.
+          // If null, we skip notification to avoid startup spam.
+
+          if (createdAt != null) {
+            DateTime closureTime = createdAt.toDate();
+
+            // Only notify if the closure was reported AFTER the app started running
+            // This prevents "Old" closures from popping up on launch.
+            if (closureTime.isAfter(_appStartTime)) {
+              NotificationService().showNotification(
+                id: change.doc.id.hashCode,
+                title: "Road Closure Alert",
+                body:
+                    "New advisory for ${data['location'] ?? 'Sagada'}. Tap to view.",
+              );
+            }
+          }
         }
       }
     });
+  }
+
+  // 3. NEW: SCHEDULE ITINERARY REMINDERS
+  void _scheduleItineraryReminders() async {
+    // 1. Wait for the widget to be ready
+    await Future.delayed(Duration.zero);
+    if (!mounted) return;
+
+    // 2. Get the Active ID from the provider
+    final itineraryProvider =
+        Provider.of<ItineraryProvider>(context, listen: false);
+    final String? itineraryId = itineraryProvider.activeItineraryId;
+
+    // 3. If we have an active trip, fetch its events from Firestore
+    if (itineraryId != null) {
+      try {
+        // NOTE: Adjust the path below if your events are stored differently.
+        // I am assuming a structure of: itineraries -> [ID] -> events (subcollection)
+        final QuerySnapshot eventSnapshot = await FirebaseFirestore.instance
+            .collection('itineraries')
+            .doc(itineraryId)
+            .collection('events')
+            .get();
+
+        for (var doc in eventSnapshot.docs) {
+          // Convert Firestore data to your Event model
+          final event = CalendarEvent.fromFirestore(doc);
+
+          // 4. Schedule the notification
+          // (NotificationService handles the logic to ignore past events)
+          NotificationService().scheduleEventNotification(
+            id: event.id.hashCode, // Unique ID for the notification
+            title: event.title,
+            body: "Happening soon at ${event.location}",
+            scheduledTime: event.date,
+          );
+        }
+        print("Scheduled reminders for ${eventSnapshot.docs.length} events.");
+      } catch (e) {
+        print("Error scheduling reminders: $e");
+      }
+    }
   }
 
   @override

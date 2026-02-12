@@ -1,5 +1,3 @@
-// ignore_for_file: deprecated_member_use
-
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -19,14 +17,13 @@ import 'dart:convert';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
-import 'dart:typed_data';
 import 'package:intl/intl.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'event_editor_screen.dart';
-import 'package:flutter_tts/flutter_tts.dart'; // 👈 ADD THIS
+import 'package:flutter_tts/flutter_tts.dart';
 import 'itinerary_detail_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/tour_guide_model.dart';
@@ -70,13 +67,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final GlobalKey _transportKey = GlobalKey();
   final Map<int, BitmapDescriptor> _cachedNumberedMarkers = {};
   bool _isFollowingUser = true;
-  Map<String, String>? _itinerarySummary; // 👈 ADD THIS
+  Map<String, String>? _itinerarySummary;
   String? _itineraryTitle;
   List<Map<String, dynamic>> _itineraryEvents = [];
   Map<String, dynamic>? _currentTransportRouteData;
   bool _locationPermissionGranted = false;
   bool _isAnimatingCamera = false;
-  bool _tourismReminderShown = false; // 👈 ADD THIS LINE
+  bool _tourismReminderShown = false;
   bool _isCustomRoutePreview = false;
   bool _isItineraryRouteVisible = false;
   LocationButtonState _locationButtonState = LocationButtonState.offCenter;
@@ -95,7 +92,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   User? _currentUser;
   Map<String, dynamic>? _userData;
   StreamSubscription? _authSubscription;
-  StreamSubscription? _userDataSubscription; // 👈 ADD THIS
+  StreamSubscription? _userDataSubscription;
   Map<String, dynamic>? _navigationDetails;
   bool _isRouteLoading = false; // To show a loading indicator
   StreamSubscription<Position>? _positionStreamSubscription;
@@ -128,7 +125,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   // ⭐️ --- START OF NEW "HEADS-UP" VARIABLES --- ⭐️
   Stream<QuerySnapshot>? _activeItineraryStream;
   String? _activeItineraryId;
-  String? _activeItineraryName; // ⭐️ ADD THIS LINE
+  String? _activeItineraryName;
   DocumentSnapshot? _activeHeadsUpEvent;
   Timer? _headsUpTimer;
   // ⭐️ --- END OF NEW "HEADS-UP" VARIABLES --- ⭐️
@@ -137,7 +134,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String _currentInstruction = ""; // The text to display and speak
   bool _isMuted = false; // 👈 ADD THIS
   double _currentSpeed = 0.0; // 👈 ADD THIS
-  List<Map<String, dynamic>> _nearbyPois = []; // 👈 ADD THIS LINE
+  List<Map<String, dynamic>> _nearbyPois = [];
   // --- END: ADD FOR TURN-BY-TURN ---
   TourGuide? _activeTourGuide; // Stores the current guide for the active trip
   String?
@@ -157,7 +154,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final List<String> _filters = [
     'All',
     'Tourist Spots',
-    'Food & Dining', // ⭐️ ADD THIS
+    'Food & Dining',
     'Business Establishments',
     'Accommodations',
     'Transport Terminals',

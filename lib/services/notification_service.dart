@@ -1,3 +1,4 @@
+import 'dart:ui'; // Import this for Color
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
@@ -13,11 +14,13 @@ class NotificationService {
   Future<void> init() async {
     tz.initializeTimeZones();
 
-    // Android Initialization
+    // CHANGE 1: Use a dedicated transparent icon for the small icon.
+    // Make sure 'ic_notification.png' exists in android/app/src/main/res/drawable/
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('ic_notification');
+    // If you haven't added the file yet, keep '@mipmap/ic_launcher' for now,
+    // but it will likely remain a white square on newer Androids.
 
-    // iOS Initialization
     const DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings();
 
@@ -30,7 +33,6 @@ class NotificationService {
     await flutterLocalNotificationsPlugin.initialize(initializationSettings);
   }
 
-  // 1. Show Instant Notification (For News & Road Closures)
   Future<void> showNotification({
     required int id,
     required String title,
@@ -42,11 +44,16 @@ class NotificationService {
       body,
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'updates_channel', // Channel ID
-          'News & Alerts', // Channel Name
+          'updates_channel',
+          'News & Alerts',
           channelDescription: 'Notifications for news and road closures',
           importance: Importance.max,
           priority: Priority.high,
+
+          // CHANGE 2: Add Color and Large Icon
+          color: Color(0xFF3A6A55), // Your app's primary green color
+          // This uses the full-color launcher icon as the "large" graphic on the right
+          largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
         ),
         iOS: DarwinNotificationDetails(),
       ),
