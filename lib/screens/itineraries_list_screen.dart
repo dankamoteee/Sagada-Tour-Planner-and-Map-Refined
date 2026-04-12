@@ -285,7 +285,7 @@ class _ItineraryListSection extends StatelessWidget {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           sliver: StreamBuilder<QuerySnapshot>(
-            stream: query.snapshots(),
+            stream: query.snapshots(includeMetadataChanges: true),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const SliverToBoxAdapter(
@@ -311,24 +311,43 @@ class _ItineraryListSection extends StatelessWidget {
                 );
               }
 
+              // ⭐️ NEW: Check if ANY write (including deletes) is pending
+              // ⭐️ NEW: Check if ANY write (including deletes) is pending
+              final bool listHasPendingWrites =
+                  snapshot.data!.metadata.hasPendingWrites;
+
               return SliverList(
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {
-                    final doc = snapshot.data!.docs[index];
-                    final data = doc.data() as Map<String, dynamic>;
-                    final bool isActive = doc.id == activeItineraryId;
+                    // ⭐️ NEW: Inject a "Syncing..." indicator at the top of the list
+                    if (index == 0 && listHasPendingWrites) {
+                      return Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            color: Colors.orange.shade50,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.orange)),
+                                const SizedBox(width: 8),
+                                Text("Syncing changes...",
+                                    style: TextStyle(
+                                        color: Colors.orange.shade800,
+                                        fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                          _buildItem(context, snapshot.data!.docs[index]),
+                        ],
+                      );
+                    }
 
-                    return _ItineraryListCard(
-                      itineraryDoc: doc, // ⭐️ Passing Doc for Pending Check
-                      itineraryData: data,
-                      itineraryId: doc.id,
-                      isActive: isActive,
-                      onSetActive: () => onSetActive(
-                        doc.id,
-                        data['name'] ?? 'My Itinerary',
-                      ),
-                      sectionTitle: title,
-                    );
+                    return _buildItem(context, snapshot.data!.docs[index]);
                   },
                   childCount: snapshot.data!.docs.length,
                 ),
@@ -337,6 +356,30 @@ class _ItineraryListSection extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+// 👇 MOVED INSIDE THE CLASS 👇
+  // Helper to keep the code clean
+  Widget _buildItem(BuildContext context, DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final String itineraryId = doc.id;
+
+    // Now these variables are successfully recognized!
+    final bool isActive = activeItineraryId == itineraryId;
+
+    return _ItineraryListCard(
+      itineraryDoc: doc,
+      itineraryData: data,
+      itineraryId: itineraryId,
+      isActive: isActive,
+      sectionTitle: title,
+      onSetActive: () {
+        onSetActive(
+          itineraryId,
+          data['name'] ?? 'My Itinerary',
+        );
+      },
     );
   }
 }

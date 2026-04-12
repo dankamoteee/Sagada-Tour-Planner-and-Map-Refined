@@ -42,6 +42,8 @@ MaterialColor createMaterialColor(Color color) {
   return MaterialColor(color.value, swatch);
 }
 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -100,15 +102,13 @@ class SagadaTourPlannerApp extends StatefulWidget {
 }
 
 class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
-  // Capture the exact time the app started
-  final DateTime _appStartTime = DateTime.now();
-
   @override
   void initState() {
     super.initState();
     _listenForUpdates();
     // Schedule reminders for the current active itinerary
     _scheduleItineraryReminders();
+    _configureSelectNotificationSubject();
   }
 
   void _listenForUpdates() {
@@ -159,33 +159,49 @@ class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
     FirebaseFirestore.instance
         .collection('roadClosures')
         .snapshots()
-        .listen((snapshot) {
-      for (var change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.added) {
-          final data = change.doc.data() as Map<String, dynamic>;
+        .listen((snapshot) async {
+      // 👈 Make async
 
-          // CRITICAL FIX: Check if the document has a timestamp.
-          // If you don't have a 'createdAt' field, you can use a fallback mechanism,
-          // but adding the field is highly recommended.
-          Timestamp? createdAt = data['createdAt'];
-          // Use 'postedAt' or whatever timestamp field you use.
-          // If null, we skip notification to avoid startup spam.
+      final prefs = await SharedPreferences.getInstance();
+      // Default to app start time if first run
+      final lastClosureTime = prefs.getInt('last_closure_timestamp') ??
+          DateTime.now().millisecondsSinceEpoch;
+      int maxTimestamp = lastClosureTime;
+
+      for (var change in snapshot.docChanges) {
+        // Only care if added or modified
+        if (change.type == DocumentChangeType.added ||
+            change.type == DocumentChangeType.modified) {
+          final data = change.doc.data() as Map<String, dynamic>;
+          final Timestamp? createdAt =
+              data['createdAt']; // Ensure this field exists!
 
           if (createdAt != null) {
-            DateTime closureTime = createdAt.toDate();
+            final int closureMsgTime = createdAt.millisecondsSinceEpoch;
 
-            // Only notify if the closure was reported AFTER the app started running
-            // This prevents "Old" closures from popping up on launch.
-            if (closureTime.isAfter(_appStartTime)) {
+            // ⭐️ CHECK: Is this closure actually new?
+            if (closureMsgTime > lastClosureTime) {
               NotificationService().showNotification(
                 id: change.doc.id.hashCode,
-                title: "Road Closure Alert",
-                body:
-                    "New advisory for ${data['location'] ?? 'Sagada'}. Tap to view.",
+                title: change.type == DocumentChangeType.added
+                    ? "New Road Closure"
+                    : "Road Closure Update",
+                body: "Advisory for ${data['location'] ?? 'Sagada'}.",
+                payload: 'road_closures', // 👈 Add payload for redirection
               );
+
+              // Update max timestamp found
+              if (closureMsgTime > maxTimestamp) {
+                maxTimestamp = closureMsgTime;
+              }
             }
           }
         }
+      }
+
+      // Save the new latest time
+      if (maxTimestamp > lastClosureTime) {
+        await prefs.setInt('last_closure_timestamp', maxTimestamp);
       }
     });
   }
@@ -232,9 +248,30 @@ class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
     }
   }
 
+  // ⭐️ NEW: Listen for notification clicks
+  void _configureSelectNotificationSubject() {
+    NotificationService()
+        .selectNotificationStream
+        .stream
+        .listen((String? payload) {
+      if (payload != null && navigatorKey.currentState != null) {
+        // Handle your payloads here
+        if (payload == 'road_closures') {
+          navigatorKey.currentState!
+              .pushNamed('/map_home'); // Or specific screen
+        } else if (payload == 'news') {
+          // Navigate to updates screen
+          // You might need to verify the route name in your routes table
+          navigatorKey.currentState!.pushNamed('/home');
+        }
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       // ... existing MaterialApp code ...
       // Just wrap your existing MaterialApp here or copy the contents of your old build method
       title: 'Sagada Tour Planner',

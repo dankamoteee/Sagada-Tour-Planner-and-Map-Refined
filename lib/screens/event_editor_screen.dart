@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -132,10 +133,6 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // Check connectivity
-    final connectivityResult = await Connectivity().checkConnectivity();
-    final bool isOffline = connectivityResult.contains(ConnectivityResult.none);
-
     final Map<String, dynamic> eventData = {
       'eventTime': Timestamp.fromDate(_selectedDateTime!),
       'destinationPoiId': _selectedDestination!['id'],
@@ -151,8 +148,6 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
         .doc(user.uid)
         .collection('itineraries')
         .doc(widget.itineraryId);
-
-    bool saveSuccessful = false; // Track success
 
     try {
       final batch = FirebaseFirestore.instance.batch();
@@ -173,56 +168,83 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
       batch.set(itineraryRef, {'lastModified': FieldValue.serverTimestamp()},
           SetOptions(merge: true));
 
-      // 1. Commit (Works offline)
-      await batch.commit();
-      saveSuccessful = true; // Mark as saved locally
-
-      // 2. Try Online Update (Fail silently if offline)
-      if (!isOffline) {
-        try {
-          final eventTime = eventData['eventTime'] as Timestamp;
-          final itineraryDoc = await itineraryRef.get();
-          final currentLastEvent =
-              itineraryDoc.data()?['lastEventDate'] as Timestamp?;
-          if (currentLastEvent == null ||
-              eventTime.compareTo(currentLastEvent) > 0) {
-            await itineraryRef.update({'lastEventDate': eventTime});
-          }
-        } catch (e) {
-          print("Online metadata update skipped: $e");
-        }
-      }
-
-      // 3. Try Notifications (Fail silently if error)
+      // ⭐️ FIX: Add a timeout to the commit.
       try {
-        if (_selectedDateTime != null) {
-          NotificationService().scheduleEventNotification(
-            id: eventRef.id.hashCode,
-            title: _selectedDestination!['name'],
-            body:
-                "Your trip to ${_selectedDestination!['name']} is starting soon.",
-            scheduledTime: _selectedDateTime!,
-          );
-        }
+        await batch.commit().timeout(const Duration(milliseconds: 2500));
       } catch (e) {
-        print("Notification scheduling failed: $e");
+        if (e is TimeoutException) {
+          debugPrint("Commit timed out (Offline mode active). Continuing...");
+        } else {
+          rethrow; // Real error, rethrow it to be caught by the outer catch
+        }
       }
-    } catch (e) {
+
+      // ⭐️ Navigate back IMMEDIATELY after commit or timeout.
       if (mounted) {
+        setState(() => _isLoading = false);
+        final successMessage = _isEditing
+            ? "Updated '${eventData['destinationPoiName']}'"
+            : "Added '${eventData['destinationPoiName']}'";
+        Navigator.pop(context, successMessage);
+      }
+
+      // 2. Perform background tasks (Fire-and-forget logic)
+      _handlePostSaveTasks(user.uid, itineraryRef, eventData);
+    } catch (e) {
+      // Only show error and stop loading if there was a REAL (non-timeout) failure
+      if (mounted) {
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Error saving: $e')));
       }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        // ⭐️ FORCE CLOSE IF SUCCESSFUL
-        if (saveSuccessful) {
-          final successMessage = _isEditing
-              ? "Updated '${eventData['destinationPoiName']}'"
-              : "Added '${eventData['destinationPoiName']}'";
-          Navigator.pop(context, successMessage);
+    }
+  }
+
+  // ⭐️ NEW HELPER FUNCTION
+  // Fixed: Added <Map<String, dynamic>> to DocumentReference
+  Future<void> _handlePostSaveTasks(
+      String uid,
+      DocumentReference<Map<String, dynamic>>
+          itineraryRef, // 👈 TYPE ADDED HERE
+      Map<String, dynamic> eventData) async {
+    // 1. Check connectivity for online metadata update
+    final connectivityResult = await Connectivity().checkConnectivity();
+    if (!connectivityResult.contains(ConnectivityResult.none)) {
+      try {
+        final eventTime = eventData['eventTime'] as Timestamp;
+        final itineraryDoc = await itineraryRef.get();
+
+        // Now .data() correctly returns Map<String, dynamic>?
+        final currentLastEvent =
+            itineraryDoc.data()?['lastEventDate'] as Timestamp?;
+
+        if (currentLastEvent == null ||
+            eventTime.compareTo(currentLastEvent) > 0) {
+          await itineraryRef.update({'lastEventDate': eventTime});
         }
+      } catch (e) {
+        print("Background sync error: $e");
       }
+    }
+
+    // 2. Schedule Notification (Local operation, but good to separate)
+    try {
+      if (_selectedDateTime != null) {
+        // Use a consistent ID generation strategy
+        final int notificationId =
+            (eventData['destinationPoiName'] ?? 'Event').hashCode +
+                _selectedDateTime.hashCode;
+
+        await NotificationService().scheduleEventNotification(
+          id: notificationId,
+          title: eventData['destinationPoiName'] ?? 'New Event',
+          body:
+              "Your trip to ${eventData['destinationPoiName']} is starting soon.",
+          scheduledTime: _selectedDateTime!,
+        );
+      }
+    } catch (e) {
+      print("Notification error: $e");
     }
   }
 

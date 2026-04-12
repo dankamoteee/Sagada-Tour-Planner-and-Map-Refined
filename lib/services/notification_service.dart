@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui'; // Import this for Color
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tz;
@@ -11,15 +12,15 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
+  // ⭐️ NEW: Stream to handle navigation
+  final StreamController<String?> selectNotificationStream =
+      StreamController<String?>.broadcast();
+
   Future<void> init() async {
     tz.initializeTimeZones();
 
-    // CHANGE 1: Use a dedicated transparent icon for the small icon.
-    // Make sure 'ic_notification.png' exists in android/app/src/main/res/drawable/
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('ic_notification');
-    // If you haven't added the file yet, keep '@mipmap/ic_launcher' for now,
-    // but it will likely remain a white square on newer Androids.
 
     const DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings();
@@ -30,13 +31,29 @@ class NotificationService {
       iOS: initializationSettingsDarwin,
     );
 
-    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+    // ⭐️ FIX: Add onDidReceiveNotificationResponse
+    await flutterLocalNotificationsPlugin.initialize(
+      initializationSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        // Handle navigation here. For now, we'll just print payload.
+        // You can add logic to navigate to specific screens based on payload.
+        print("Notification Tapped: ${response.payload}");
+      },
+    );
+
+    // ⭐️ CRITICAL FOR ANDROID 13+: Request Permission
+    final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+        flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    await androidImplementation?.requestNotificationsPermission();
   }
 
   Future<void> showNotification({
     required int id,
     required String title,
     required String body,
+    String? payload, // 👈 Add this
   }) async {
     await flutterLocalNotificationsPlugin.show(
       id,
@@ -57,6 +74,7 @@ class NotificationService {
         ),
         iOS: DarwinNotificationDetails(),
       ),
+      payload: payload, // 👈 Pass it here
     );
   }
 
@@ -67,12 +85,36 @@ class NotificationService {
     required String body,
     required DateTime scheduledTime,
   }) async {
-    // Notify 15 minutes before the event
+    final now = DateTime.now();
     final triggerTime = scheduledTime.subtract(const Duration(minutes: 15));
 
-    // Don't schedule if the time has already passed
-    if (triggerTime.isBefore(DateTime.now())) return;
+    // ⭐️ FIX: If the 15-min warning time has passed but the event hasn't happened yet,
+    // show the notification immediately (or 5 seconds from now).
+    if (triggerTime.isBefore(now)) {
+      if (scheduledTime.isAfter(now)) {
+        // Event is soon (within 15 mins), notify in 5 seconds
+        await flutterLocalNotificationsPlugin.zonedSchedule(
+          id,
+          'Happening Soon: $title',
+          body,
+          tz.TZDateTime.from(now.add(const Duration(seconds: 5)), tz.local),
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'itinerary_channel',
+              'Itinerary Reminders',
+              importance: Importance.max,
+              priority: Priority.high,
+            ),
+          ),
+          androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+          uiLocalNotificationDateInterpretation:
+              UILocalNotificationDateInterpretation.absoluteTime,
+        );
+      }
+      return;
+    }
 
+    // Standard scheduling logic...
     await flutterLocalNotificationsPlugin.zonedSchedule(
       id,
       'Upcoming Event: $title',
