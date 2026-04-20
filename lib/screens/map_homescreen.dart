@@ -2589,21 +2589,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _updateHeadsUpEvent(QuerySnapshot snapshot) {
     if (!mounted) return;
 
-    // --- START OF MODIFICATION ---
-    // 1. Check if the query for ALL upcoming events returned empty.
+    // ⭐️ FIX: Removed the aggressive "Auto-Clear" logic!
+    // If the snapshot is empty, it just means no upcoming events right now.
+    // We just set the HeadsUpEvent to null so the card hides, but we KEEP the trip active!
     if (snapshot.docs.isEmpty) {
-      // 2. This means the itinerary is officially "finished".
-      print("No upcoming events found. Clearing active itinerary.");
-      // 3. Call the existing function to clear the ID from SharedPreferences.
-      _clearActiveItinerary();
-      return; // Stop processing.
+      setState(() {
+        _activeHeadsUpEvent = null;
+      });
+      return;
     }
-    // --- END OF MODIFICATION ---
 
     final now = DateTime.now();
     DocumentSnapshot? eventForToday;
 
-    // This logic now only runs if we are sure there are upcoming events.
     for (final doc in snapshot.docs) {
       final eventTime = (doc['eventTime'] as Timestamp).toDate();
       if (_isSameDay(eventTime, now)) {
@@ -2612,8 +2610,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
 
-    // Update the state
-    // (This will be null if there are upcoming events, but just not for today)
     setState(() {
       _activeHeadsUpEvent = eventForToday;
     });
@@ -4160,9 +4156,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     title: "Default",
                     icon: Icons.map_outlined,
                     isSelected: _currentMapType == MapType.normal,
-                    onTap: () {
+                    onTap: () async {
+                      // ⭐️ FIX: Re-apply the custom JSON style and save to memory
                       setState(() => _currentMapType = MapType.normal);
-                      Navigator.pop(context);
+                      await _setMapStyle('tourism.json'); // Apply the style
+
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setString('mapStyle', 'tourism.json');
+
+                      if (mounted) Navigator.pop(context);
                     },
                   ),
                   // Option 2: Satellite

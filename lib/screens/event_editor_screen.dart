@@ -263,12 +263,12 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
         actions: [
           TextButton(
             child: const Text('Cancel'),
-            onPressed: () => Navigator.of(context).pop(false), // Return false
+            onPressed: () => Navigator.of(context).pop(false),
           ),
           TextButton(
             style: TextButton.styleFrom(foregroundColor: Colors.red),
             child: const Text('Delete'),
-            onPressed: () => Navigator.of(context).pop(true), // Return true
+            onPressed: () => Navigator.of(context).pop(true),
           ),
         ],
       ),
@@ -276,19 +276,48 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
 
     // 2. Only proceed if the user confirmed
     if (didConfirm == true) {
-      try {
-        // Delete the document from Firestore
-        await widget.eventDoc!.reference.delete();
+      setState(() => _isLoading = true); // ⭐️ Start loading spinner
 
-        // Pop the screen and send back a success message
+      try {
+        final batch = FirebaseFirestore.instance.batch();
+
+        // A. Delete the event from Firestore
+        batch.delete(widget.eventDoc!.reference);
+
+        // B. Update the parent itinerary so the "Syncing..." label triggers!
+        final itineraryRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser!.uid)
+            .collection('itineraries')
+            .doc(widget.itineraryId);
+
+        batch.update(itineraryRef, {
+          'lastModified': FieldValue.serverTimestamp(),
+          'totalEvents': FieldValue.increment(-1), // Update the count
+        });
+
+        // C. Commit with TIMEOUT to prevent the offline freeze!
+        try {
+          await batch.commit().timeout(const Duration(milliseconds: 2500));
+        } catch (e) {
+          if (e is TimeoutException) {
+            debugPrint(
+                "Delete commit timed out (Offline mode active). Continuing...");
+          } else {
+            rethrow; // Real error, rethrow it to be caught below
+          }
+        }
+
+        // D. Pop the screen and send back a success message immediately
         if (mounted) {
+          setState(() => _isLoading = false);
           Navigator.pop(context, 'Event deleted successfully!');
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Failed to delete event: $e')));
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to delete event: $e')));
         }
       }
     }

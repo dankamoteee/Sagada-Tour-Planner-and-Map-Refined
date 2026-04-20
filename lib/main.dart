@@ -10,6 +10,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter/services.dart';
 import 'services/notification_service.dart'; // 👈 Import
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import 'models/event_model.dart';
 import 'screens/login_screen.dart';
@@ -106,9 +107,25 @@ class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
   void initState() {
     super.initState();
     _listenForUpdates();
-    // Schedule reminders for the current active itinerary
-    _scheduleItineraryReminders();
     _configureSelectNotificationSubject();
+
+    // ⭐️ FIX: Wait for the app frame to build so Provider is accessible
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<ItineraryProvider>(context, listen: false);
+
+      // 1. Schedule immediately if it loaded fast enough
+      if (provider.activeItineraryId != null) {
+        _scheduleItineraryReminders();
+      }
+
+      // 2. Listen for whenever the user changes their active itinerary later!
+      provider.addListener(() {
+        // If the ID isn't null, schedule the reminders for the new trip
+        if (provider.activeItineraryId != null) {
+          _scheduleItineraryReminders();
+        }
+      });
+    });
   }
 
   void _listenForUpdates() {
@@ -208,39 +225,41 @@ class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
 
   // 3. NEW: SCHEDULE ITINERARY REMINDERS
   void _scheduleItineraryReminders() async {
-    // 1. Wait for the widget to be ready
     await Future.delayed(Duration.zero);
     if (!mounted) return;
 
-    // 2. Get the Active ID from the provider
+    // ⭐️ FIX 1: Get the current logged-in user
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return; // Exit if no one is logged in
+
+    await NotificationService().cancelAllScheduledNotifications();
+
     final itineraryProvider =
         Provider.of<ItineraryProvider>(context, listen: false);
     final String? itineraryId = itineraryProvider.activeItineraryId;
 
-    // 3. If we have an active trip, fetch its events from Firestore
     if (itineraryId != null) {
       try {
-        // NOTE: Adjust the path below if your events are stored differently.
-        // I am assuming a structure of: itineraries -> [ID] -> events (subcollection)
+        // ⭐️ FIX 2: Corrected the Firestore path to include 'users' and 'user.uid'
         final QuerySnapshot eventSnapshot = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
             .collection('itineraries')
             .doc(itineraryId)
             .collection('events')
             .get();
 
         for (var doc in eventSnapshot.docs) {
-          // Convert Firestore data to your Event model
           final event = CalendarEvent.fromFirestore(doc);
 
-          // 4. Schedule the notification
-          // (NotificationService handles the logic to ignore past events)
           NotificationService().scheduleEventNotification(
-            id: event.id.hashCode, // Unique ID for the notification
+            id: event.id.hashCode,
             title: event.title,
             body: "Happening soon at ${event.location}",
             scheduledTime: event.date,
           );
         }
+        // This print statement will now show up in your debug console to prove it worked!
         print("Scheduled reminders for ${eventSnapshot.docs.length} events.");
       } catch (e) {
         print("Error scheduling reminders: $e");
@@ -255,14 +274,14 @@ class _SagadaTourPlannerAppState extends State<SagadaTourPlannerApp> {
         .stream
         .listen((String? payload) {
       if (payload != null && navigatorKey.currentState != null) {
-        // Handle your payloads here
         if (payload == 'road_closures') {
-          navigatorKey.currentState!
-              .pushNamed('/map_home'); // Or specific screen
+          navigatorKey.currentState!.pushNamed('/map_home');
         } else if (payload == 'news') {
-          // Navigate to updates screen
-          // You might need to verify the route name in your routes table
           navigatorKey.currentState!.pushNamed('/home');
+        } else if (payload == 'itinerary') {
+          // ⭐️ ADD THIS: Route them to their trips when they tap an event reminder
+          navigatorKey.currentState!.pushNamed(
+              '/home'); // Adjust if your trips tab is a different route
         }
       }
     });

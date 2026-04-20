@@ -38,6 +38,9 @@ class NotificationService {
         // Handle navigation here. For now, we'll just print payload.
         // You can add logic to navigate to specific screens based on payload.
         print("Notification Tapped: ${response.payload}");
+
+        // ⭐️ ADD THIS LINE: Send the payload to the stream so main.dart can navigate!
+        selectNotificationStream.sink.add(response.payload);
       },
     );
 
@@ -109,6 +112,7 @@ class NotificationService {
           androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
           uiLocalNotificationDateInterpretation:
               UILocalNotificationDateInterpretation.absoluteTime,
+          payload: 'itinerary',
         );
       }
       return;
@@ -134,5 +138,9 @@ class NotificationService {
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
     );
+  }
+
+  Future<void> cancelAllScheduledNotifications() async {
+    await flutterLocalNotificationsPlugin.cancelAll();
   }
 }
